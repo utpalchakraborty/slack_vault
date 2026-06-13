@@ -36,11 +36,17 @@ To inspect resolved settings:
 make show-config
 ```
 
-To archive a local file and create a source record in the configured vault:
+To archive a local file, extract deterministic evidence, and create a source
+record in the configured vault:
 
 ```sh
 make ingest-file FILE=path/to/source.md
 ```
+
+The initial local extractor supports Markdown, plain text, PDF, DOCX, and XLSX
+sources. Source records include extraction status and source-grounded evidence
+anchors such as headings, PDF pages, Word paragraphs or tables, and spreadsheet
+sheets or cell ranges.
 
 ## Development Checks
 

@@ -5,6 +5,12 @@ from pathlib import Path
 
 from slack_vault.archive import ArchivedSourceRef
 from slack_vault.config import ArchiveProviderKind
+from slack_vault.extraction import (
+    EvidenceBlock,
+    EvidenceLocation,
+    EvidenceLocationKind,
+    ExtractionResult,
+)
 from slack_vault.source_registry import (
     generate_source_id,
     render_source_record,
@@ -30,6 +36,37 @@ def test_render_source_record_includes_archive_and_origin_metadata() -> None:
     assert "# Example Plan.md" in markdown
     assert "- Uploaded by: local-user" in markdown
     assert "Extraction has not run yet." in markdown
+
+
+def test_render_source_record_includes_extracted_evidence() -> None:
+    ref = _archived_source_ref()
+    markdown = render_source_record(
+        ref,
+        "source-2026-06-13-abcdef123456",
+        extraction_result=ExtractionResult.completed(
+            extractor_name="markdown",
+            evidence=(
+                EvidenceBlock(
+                    sequence=1,
+                    text="# Overview\n\nEvidence body.",
+                    location=EvidenceLocation(
+                        kind=EvidenceLocationKind.HEADING,
+                        file_name="Example Plan.md",
+                        heading="Overview",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert 'extraction_status: "completed"' in markdown
+    assert 'extractor_name: "markdown"' in markdown
+    assert "extracted_evidence_count: 1" in markdown
+    assert "- Status: completed" in markdown
+    assert "- Evidence blocks: 1" in markdown
+    assert "### Evidence 1" in markdown
+    assert '- Location: Example Plan.md, heading "Overview"' in markdown
+    assert "# Overview\n\nEvidence body." in markdown
 
 
 def test_write_source_record_is_idempotent_without_overwrite(tmp_path: Path) -> None:

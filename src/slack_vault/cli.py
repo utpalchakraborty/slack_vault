@@ -75,6 +75,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"Source: {ingest_result.source_record.source_id}")
         print(f"Archive URI: {ingest_result.archived_source.uri}")
+        print(f"Extraction status: {ingest_result.extraction_result.status.value}")
+        print(f"Extractor: {ingest_result.extraction_result.extractor_name}")
+        print(f"Evidence blocks: {len(ingest_result.extraction_result.evidence)}")
         print(f"Source record: {ingest_result.source_record.path}")
         print(f"Created source record: {ingest_result.source_record.created}")
         return 0

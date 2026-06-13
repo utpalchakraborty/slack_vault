@@ -280,10 +280,10 @@ Initial supported formats:
 - Plain text
 - PDF
 - Word documents
+- Excel workbooks
 
 Next supported formats:
 
-- Excel workbooks
 - Images with OCR and vision extraction
 - Presentation files, if needed
 

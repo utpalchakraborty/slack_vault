@@ -1,4 +1,4 @@
-"""Local ingestion orchestration for Phase 1."""
+"""Local ingestion orchestration."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from slack_vault.archive import (
     SourceIngestMetadata,
 )
 from slack_vault.config import ArchiveProviderKind, Settings
+from slack_vault.extraction import ExtractionResult, extract_document
 from slack_vault.source_registry import SourceRecordWriteResult, write_source_record
 
 
@@ -20,6 +21,7 @@ class LocalFileIngestResult:
     """Result of ingesting a local file into archive and source registry."""
 
     archived_source: ArchivedSourceRef
+    extraction_result: ExtractionResult
     source_record: SourceRecordWriteResult
 
 
@@ -31,7 +33,7 @@ def ingest_local_file(
     overwrite_source_record: bool = False,
     now: datetime | None = None,
 ) -> LocalFileIngestResult:
-    """Archive a local file and write its source record."""
+    """Archive a local file, extract evidence, and write its source record."""
 
     if settings.archive_provider is not ArchiveProviderKind.LOCAL:
         raise NotImplementedError(
@@ -46,12 +48,18 @@ def ingest_local_file(
         uploaded_by=uploaded_by,
     )
     archived_source = provider.save_source(file_path, metadata, now=now)
+    extraction_result = extract_document(
+        archived_source,
+        provider.get_source_path(archived_source),
+    )
     source_record = write_source_record(
         settings.obsidian_vault_path,
         archived_source,
+        extraction_result=extraction_result,
         overwrite=overwrite_source_record,
     )
     return LocalFileIngestResult(
         archived_source=archived_source,
+        extraction_result=extraction_result,
         source_record=source_record,
     )

@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from slack_vault.archive import ArchivedSourceRef, format_datetime
+from slack_vault.extraction import ExtractionResult
 
 SOURCE_RECORDS_DIRECTORY = Path("20 Sources/sources")
+EVIDENCE_FENCE = "````"
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ def write_source_record(
     vault_path: Path,
     ref: ArchivedSourceRef,
     *,
+    extraction_result: ExtractionResult | None = None,
     overwrite: bool = False,
 ) -> SourceRecordWriteResult:
     """Write a Markdown source record into the Obsidian vault."""
@@ -49,13 +52,24 @@ def write_source_record(
             source_id=source_id, path=target_path, created=False
         )
 
-    target_path.write_text(render_source_record(ref, source_id), encoding="utf-8")
+    target_path.write_text(
+        render_source_record(ref, source_id, extraction_result=extraction_result),
+        encoding="utf-8",
+    )
     return SourceRecordWriteResult(source_id=source_id, path=target_path, created=True)
 
 
-def render_source_record(ref: ArchivedSourceRef, source_id: str) -> str:
+def render_source_record(
+    ref: ArchivedSourceRef,
+    source_id: str,
+    *,
+    extraction_result: ExtractionResult | None = None,
+) -> str:
     """Render an archived source reference as Markdown."""
 
+    extraction_status = (
+        "pending" if extraction_result is None else extraction_result.status.value
+    )
     frontmatter = _frontmatter(
         {
             "title": ref.original_filename,
@@ -70,7 +84,16 @@ def render_source_record(ref: ArchivedSourceRef, source_id: str) -> str:
             "original_filename": ref.original_filename,
             "ingestion_method": ref.ingestion_method,
             "ingested_at": format_datetime(ref.created_at),
-            "extraction_status": "pending",
+            "extraction_status": extraction_status,
+            "extractor_name": None
+            if extraction_result is None
+            else extraction_result.extractor_name,
+            "extracted_evidence_count": None
+            if extraction_result is None
+            else len(extraction_result.evidence),
+            "extraction_error": None
+            if extraction_result is None
+            else extraction_result.error_message,
             "uploaded_by": ref.uploaded_by,
             "slack_workspace_id": ref.slack_workspace_id,
             "slack_channel_id": ref.slack_channel_id,
@@ -114,7 +137,7 @@ def render_source_record(ref: ArchivedSourceRef, source_id: str) -> str:
             "",
             "## Extracted Evidence",
             "",
-            "Extraction has not run yet.",
+            *_render_extracted_evidence(extraction_result),
             "",
         ]
     )
@@ -129,6 +152,38 @@ def _frontmatter(values: dict[str, object]) -> str:
     lines.append("---")
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_extracted_evidence(
+    extraction_result: ExtractionResult | None,
+) -> list[str]:
+    if extraction_result is None:
+        return ["Extraction has not run yet."]
+
+    lines = [
+        f"- Status: {extraction_result.status.value}",
+        f"- Extractor: {extraction_result.extractor_name}",
+        f"- Evidence blocks: {len(extraction_result.evidence)}",
+    ]
+    if extraction_result.error_message is not None:
+        lines.append(f"- Error: {extraction_result.error_message}")
+    if not extraction_result.evidence:
+        return lines
+
+    for block in extraction_result.evidence:
+        lines.extend(
+            [
+                "",
+                f"### Evidence {block.sequence}",
+                "",
+                f"- Location: {block.location.label()}",
+                "",
+                f"{EVIDENCE_FENCE}text",
+                block.text,
+                EVIDENCE_FENCE,
+            ]
+        )
+    return lines
 
 
 def _yaml_scalar(value: object) -> str:

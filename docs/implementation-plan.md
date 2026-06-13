@@ -44,10 +44,11 @@ These choices are defaults for the POC and can be revised before coding.
 - AI providers:
   - Anthropic first, behind an internal provider interface.
   - Default model: `claude-haiku-4-5-20251001`.
-- Initial document extraction:
-  - Markdown and plain text first;
-  - PDF and Word next;
-  - Excel and images after the basic loop is working.
+- Initial document processing:
+  - Phase 2a: deterministic extraction into source-grounded evidence;
+  - Phase 2b: optional AI evidence enhancement for noisy or ambiguous sources;
+  - Markdown, plain text, PDF, Word, and Excel first;
+  - images after the basic loop is working.
 - Retrieval:
   - lexical Markdown/frontmatter search first;
   - vector retrieval after the Q&A path is functional.
@@ -69,9 +70,11 @@ These choices are defaults for the POC and can be revised before coding.
 Status as of 2026-06-13:
 
 - Phase 0 is complete and pushed.
-- Phase 1 is implemented in the working tree and ready for review.
-- Code repository commit:
-  `f194084 Scaffold Slack Vault Phase 0`.
+- Phase 1 is complete and pushed.
+- Phase 2a deterministic extraction is implemented in the working tree and ready
+  for review.
+- Latest code repository commit:
+  `c69c53d Implement local archive source registry`.
 - Obsidian vault repository commit:
   `8c73576 Initialize Obsidian vault skeleton`.
 - Both commits have been pushed to `origin/main`.
@@ -82,7 +85,9 @@ Status as of 2026-06-13:
 - The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
   app state ignored.
 
-Next implementation phase after Phase 1 review: Phase 2, document extraction.
+Next implementation phase after Phase 2a review: Phase 2b optional AI evidence
+enhancement, or Phase 3 classification and synthesis if no enhancement cases
+need to block the local loop.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -188,42 +193,120 @@ Validation:
 - `make check` passes with 17 tests and 94.09% coverage.
 - `make -n ingest-file FILE=README.md` confirms the Make wrapper command.
 
-## 6. Phase 2: Document Extraction
+## 6. Phase 2: Document Extraction And Evidence Enhancement
 
-### Goal
+Phase 2 is split into a required deterministic extraction phase and an optional
+AI enhancement phase. The split keeps the ingestion path auditable and testable
+while still allowing AI to improve difficult documents.
+
+### 6.1 Phase 2a: Deterministic Document Extraction
+
+#### Goal
 
 Convert source documents into normalized extracted evidence that can later be
-used by AI synthesis and retrieval.
+used by AI enhancement, AI synthesis, and retrieval.
 
-### Deliverables
+Phase 2a must not require Slack or AI credentials.
+
+#### Deliverables
 
 - `DocumentExtractor` interface.
-- Extractors for:
+- Initial deterministic extractors for:
   - Markdown;
   - plain text;
   - PDF;
-  - Word documents.
+  - Word documents;
+  - Excel workbooks.
 - Normalized extraction result model.
 - Evidence location model:
   - file-level for text/Markdown;
   - page-level for PDF;
-  - heading or paragraph-level for Word where practical.
+  - heading, paragraph, or table-level for Word where practical;
+  - sheet and cell-range-level for Excel when added.
 - Extraction status updates in source records.
 - CLI path that archives a local file and writes extracted evidence into the
   source record.
+- Tests using small committed fixtures or programmatically generated fixtures.
 
-### Acceptance Criteria
+#### Acceptance Criteria
 
-- Sample Markdown, text, PDF, and Word files produce readable extracted evidence.
+- Sample Markdown, text, PDF, Word, and Excel files produce readable extracted
+  evidence.
 - Source records show extraction status and extracted evidence.
 - Extraction failures are recorded without corrupting the vault.
 - Tests cover all initial extractors using small fixtures.
+- Tests verify source anchors such as file names, headings, PDF page numbers, and
+  Word paragraph or table references.
+
+#### Implementation Notes
+
+Phase 2a is implemented in the working tree.
+
+- `src/slack_vault/extraction.py` defines `DocumentExtractor`,
+  `ExtractionResult`, `EvidenceBlock`, and deterministic extractors for
+  Markdown, plain text, PDF, DOCX, and XLSX.
+- PDF extraction uses `pypdf`; DOCX and XLSX extraction use the ZIP/XML
+  structure directly.
+- `slack-vault ingest-file` archives the source, extracts evidence from the
+  archived copy, writes extraction status and evidence into the source record,
+  and prints extraction status in CLI output.
+- Extraction failures and unsupported file types are recorded as source-record
+  status instead of aborting source-record creation.
+
+Validation:
+
+- `make check` passes with 27 tests and 91.35% coverage.
+
+#### Test Fixture Strategy
+
+- Use small synthetic fixtures checked into `tests/fixtures/` for stable
+  extractor behavior.
+- Prefer programmatically generated PDF and Word fixtures when the generation
+  code is simple enough to keep the expected structure obvious.
+- Use sanitized real-world examples only when synthetic fixtures miss important
+  layout cases. Do not commit confidential source documents or original
+  uploaded source files.
+- Keep any large or sensitive real-world examples outside Git and archive them
+  through the configured archive provider when needed for manual testing.
+
+### 6.2 Phase 2b: Optional AI Evidence Enhancement
+
+#### Goal
+
+Use AI to clean up, structure, or enrich extracted evidence when deterministic
+extraction is incomplete, noisy, or ambiguous.
+
+Phase 2b is optional per document and per evidence block. A clean Markdown file
+may skip it entirely, while a scanned PDF, broken PDF table, or complex workbook
+may need it.
+
+#### Deliverables
+
+- `EvidenceEnhancer` interface that accepts deterministic evidence and returns
+  enhanced evidence while preserving source anchors.
+- Enhancement status updates in source records, separate from extraction status.
+- AI-assisted preprocessing prompts for:
+  - cleaning noisy PDF text;
+  - inferring sections from weak layout;
+  - interpreting tables while preserving cited source locations;
+  - summarizing large evidence blocks without replacing the original evidence.
+- Mocked tests for prompt input/output parsing and failure handling.
+
+#### Acceptance Criteria
+
+- Phase 2a output remains usable when Phase 2b is disabled or unavailable.
+- AI enhancement never replaces the archived original source or the deterministic
+  extracted evidence.
+- Enhanced evidence preserves links back to deterministic source locations.
+- Enhancement failures are recorded without blocking deterministic extraction.
+- Classification, taxonomy selection, note matching, and knowledge-note writing
+  remain Phase 3 responsibilities.
 
 ## 7. Phase 3: AI Classification And Knowledge Synthesis
 
 ### Goal
 
-Use AI to transform extracted evidence into Obsidian knowledge notes.
+Use AI to transform extracted or enhanced evidence into Obsidian knowledge notes.
 
 ### Deliverables
 
@@ -245,6 +328,7 @@ Use AI to transform extracted evidence into Obsidian knowledge notes.
 - CLI command for local end-to-end ingest:
   - archive source;
   - extract evidence;
+  - optionally enhance evidence;
   - classify;
   - create or update knowledge notes.
 
