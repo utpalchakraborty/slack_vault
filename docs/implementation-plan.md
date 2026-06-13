@@ -33,7 +33,8 @@ The proof of concept is successful when a user can:
 These choices are defaults for the POC and can be revised before coding.
 
 - Language: Python.
-- Project tooling: `uv`, `ruff`, `pytest`.
+- Project tooling: `uv`, `ruff`, `mypy`, `pytest`, `pytest-cov`, and
+  `pre-commit`.
 - Slack integration: Slack Bolt for Python.
 - Operational state: SQLite for local POC.
 - Vault format: plain Markdown with YAML frontmatter and Obsidian wikilinks.
@@ -41,7 +42,8 @@ These choices are defaults for the POC and can be revised before coding.
   - local filesystem for POC;
   - Google Cloud Storage after local flow works.
 - AI providers:
-  - OpenAI and/or Anthropic behind an internal provider interface.
+  - Anthropic first, behind an internal provider interface.
+  - Default model: `claude-haiku-4-5-20251001`.
 - Initial document extraction:
   - Markdown and plain text first;
   - PDF and Word next;
@@ -49,6 +51,18 @@ These choices are defaults for the POC and can be revised before coding.
 - Retrieval:
   - lexical Markdown/frontmatter search first;
   - vector retrieval after the Q&A path is functional.
+
+## 3.1 Current Local Environment Decisions
+
+- Code repository: `/Users/utpalrohan/code/slack_vault`.
+- Obsidian vault repository: `/Users/utpalrohan/code/slack_obsidian`.
+- The configured vault path is read from `SLACK_VAULT_OBSIDIAN_PATH`.
+- The local archive path is read from `SLACK_VAULT_ARCHIVE_PATH` and defaults
+  to `.data/archive` in the app repository.
+- The AI provider is read from `SLACK_VAULT_AI_PROVIDER` and defaults to
+  `anthropic`.
+- Anthropic credentials are read from `ANTHROPIC_API_KEY`.
+- Haiku 4.5 is configured through `SLACK_VAULT_ANTHROPIC_MODEL`.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -358,10 +372,13 @@ production too early.
 These are useful to decide before Phase 0 starts, but none require redesigning
 the architecture.
 
-- Confirm Python as the POC implementation language.
-- Choose first AI provider for implementation: OpenAI or Anthropic.
+- Confirm Python as the POC implementation language. Decision: Python.
+- Choose first AI provider for implementation: OpenAI or Anthropic. Decision:
+  Anthropic.
 - Decide whether to initialize this repository as the Git-backed vault repo or
-  keep code and vault in separate repositories later.
+  keep code and vault in separate repositories later. Decision: separate
+  repositories; the Obsidian vault repo is
+  `/Users/utpalrohan/code/slack_obsidian`.
 - Decide whether the first Slack POC uses Socket Mode or a public HTTP endpoint.
 - Decide whether vector retrieval is required in the POC or can follow the first
   lexical Q&A loop.
