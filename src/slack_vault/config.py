@@ -8,9 +8,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Final
+
+from dotenv import dotenv_values
 
 DEFAULT_OBSIDIAN_VAULT_PATH = Path("/Users/utpalrohan/code/slack_obsidian")
 DEFAULT_ARCHIVE_PATH = ".data/archive"
+DEFAULT_ENV_FILE = Path(".env")
+_ENV_FILE_UNSET: Final = object()
 
 ANTHROPIC_HAIKU_45_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_HAIKU_45_MAX_INPUT_TOKENS = 200_000
@@ -64,10 +69,19 @@ class Settings:
     ai: AISettings
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        env_file: Path | None | object = _ENV_FILE_UNSET,
+    ) -> Settings:
         """Build settings from environment variables."""
 
-        values = os.environ if environ is None else environ
+        env_file_path = _resolve_env_file(environ=environ, env_file=env_file)
+        values = _settings_values(
+            os.environ if environ is None else environ,
+            env_file=env_file_path,
+        )
         return cls(
             environment=values.get("SLACK_VAULT_ENV", "local"),
             obsidian_vault_path=_path_value(
@@ -136,6 +150,34 @@ class Settings:
             },
         }
         return json.dumps(data, indent=2, sort_keys=True)
+
+
+def _resolve_env_file(
+    *,
+    environ: Mapping[str, str] | None,
+    env_file: Path | None | object,
+) -> Path | None:
+    if env_file is _ENV_FILE_UNSET:
+        return DEFAULT_ENV_FILE if environ is None else None
+    if env_file is None:
+        return None
+    if isinstance(env_file, Path):
+        return env_file
+    raise TypeError(f"Unsupported env_file value: {env_file!r}")
+
+
+def _settings_values(
+    environ: Mapping[str, str],
+    *,
+    env_file: Path | None,
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if env_file is not None and env_file.is_file():
+        for key, value in dotenv_values(env_file).items():
+            if value is not None:
+                values[key] = value
+    values.update(environ)
+    return values
 
 
 def _path_value(values: Mapping[str, str], key: str, default: Path) -> Path:

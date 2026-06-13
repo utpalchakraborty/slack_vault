@@ -8,8 +8,12 @@ from slack_vault.cli import main
 
 
 def test_show_config_prints_redacted_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+
     exit_code = main(["show-config"])
     captured = capsys.readouterr()
 

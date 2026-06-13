@@ -64,6 +64,8 @@ These choices are defaults for the POC and can be revised before coding.
   `anthropic`.
 - Anthropic credentials are read from `ANTHROPIC_API_KEY`.
 - Haiku 4.5 is configured through `SLACK_VAULT_ANTHROPIC_MODEL`.
+- CLI/default settings load `.env` from the current working directory when it
+  exists. Real environment variables override matching `.env` values.
 
 ## 3.2 Current Progress
 
@@ -71,10 +73,12 @@ Status as of 2026-06-13:
 
 - Phase 0 is complete and pushed.
 - Phase 1 is complete and pushed.
-- Phase 2a deterministic extraction is implemented in the working tree and ready
-  for review.
-- Latest code repository commit:
-  `c69c53d Implement local archive source registry`.
+- Phase 2a deterministic extraction is complete and pushed.
+- Phase 2b groundwork is implemented with `.env` loading,
+  Anthropic text requests, file upload, file-grounded messages, uploaded-file
+  cleanup, mocked unit tests, and an opt-in live smoke test.
+- Latest pushed code repository commit before Phase 2b groundwork:
+  `fdb9b2f Implement deterministic document extraction`.
 - Obsidian vault repository commit:
   `8c73576 Initialize Obsidian vault skeleton`.
 - Both commits have been pushed to `origin/main`.
@@ -282,6 +286,8 @@ may need it.
 
 #### Deliverables
 
+- `AITextProvider` and `AIFileProvider` interfaces plus Anthropic implementation
+  for enhancement prompts and original-file inspection.
 - `EvidenceEnhancer` interface that accepts deterministic evidence and returns
   enhanced evidence while preserving source anchors.
 - Enhancement status updates in source records, separate from extraction status.
@@ -291,6 +297,40 @@ may need it.
   - interpreting tables while preserving cited source locations;
   - summarizing large evidence blocks without replacing the original evidence.
 - Mocked tests for prompt input/output parsing and failure handling.
+- Opt-in live Anthropic smoke test gated by `SLACK_VAULT_RUN_LIVE_AI_TESTS=1`,
+  including file upload, file-grounded message, and file cleanup.
+
+#### Groundwork Implemented
+
+Phase 2b provider groundwork is implemented as a foundation slice.
+
+- `src/slack_vault/config.py` loads `.env` from the current working directory for
+  default CLI/settings usage. Real environment variables override matching
+  `.env` values.
+- `src/slack_vault/ai.py` defines:
+  - `AITextProvider`;
+  - `AIFileProvider`;
+  - `AITextRequest`;
+  - `AITextResponse`;
+  - `AIUploadedFile`;
+  - `AnthropicAIProvider`.
+- `AnthropicAIProvider` supports:
+  - text completions through the Anthropic Messages API;
+  - file upload through `client.beta.files.upload`;
+  - file-grounded beta Messages requests using uploaded `file_id` document
+    blocks;
+  - uploaded-file deletion through `client.beta.files.delete`.
+- `tests/test_ai.py` covers the Anthropic harness with mocked text, upload,
+  file-grounded message, and delete paths.
+- The live Anthropic smoke test uses the key from `.env`, verifies text
+  completion, uploads a tiny temporary file, asks a file-grounded question, and
+  deletes the uploaded file.
+
+Validation:
+
+- `make check` passes with 35 tests, one skipped live test, and 91.15% coverage.
+- `SLACK_VAULT_RUN_LIVE_AI_TESTS=1 uv run pytest tests/test_ai.py -k live -q --no-cov`
+  passes with one live test.
 
 #### Acceptance Criteria
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from slack_vault.config import (
     ANTHROPIC_HAIKU_45_MAX_INPUT_TOKENS,
     ANTHROPIC_HAIKU_45_MAX_OUTPUT_TOKENS,
@@ -10,6 +12,22 @@ from slack_vault.config import (
     AIProvider,
     ArchiveProviderKind,
     Settings,
+)
+
+CONFIG_ENV_KEYS = (
+    "SLACK_VAULT_ENV",
+    "SLACK_VAULT_OBSIDIAN_PATH",
+    "SLACK_VAULT_ARCHIVE_PROVIDER",
+    "SLACK_VAULT_ARCHIVE_PATH",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "SLACK_VAULT_INGESTION_CHANNEL_ID",
+    "SLACK_VAULT_AI_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "SLACK_VAULT_ANTHROPIC_MODEL",
+    "SLACK_VAULT_AI_MAX_INPUT_TOKENS",
+    "SLACK_VAULT_AI_MAX_OUTPUT_TOKENS",
 )
 
 
@@ -57,6 +75,57 @@ def test_settings_read_environment_values() -> None:
     assert settings.ai.model == "custom-model"
     assert settings.ai.max_input_tokens == 123
     assert settings.ai.max_output_tokens == 456
+
+
+def test_settings_load_dotenv_from_current_working_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in CONFIG_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "SLACK_VAULT_ENV=dotenv-local",
+                "SLACK_VAULT_OBSIDIAN_PATH=~/dotenv-vault",
+                "ANTHROPIC_API_KEY=sk-ant-dotenv-value",
+                "SLACK_VAULT_AI_MAX_INPUT_TOKENS=789",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env()
+
+    assert settings.environment == "dotenv-local"
+    assert settings.obsidian_vault_path == Path("~/dotenv-vault").expanduser()
+    assert settings.ai.anthropic_api_key == "sk-ant-dotenv-value"
+    assert settings.ai.max_input_tokens == 789
+
+
+def test_settings_environment_values_override_dotenv(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "SLACK_VAULT_ENV=dotenv-local",
+                "ANTHROPIC_API_KEY=sk-ant-dotenv-value",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env(
+        {
+            "SLACK_VAULT_ENV": "explicit-environment",
+            "ANTHROPIC_API_KEY": "sk-ant-explicit-value",
+        },
+        env_file=env_file,
+    )
+
+    assert settings.environment == "explicit-environment"
+    assert settings.ai.anthropic_api_key == "sk-ant-explicit-value"
 
 
 def test_settings_json_redacts_secrets() -> None:

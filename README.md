@@ -20,13 +20,12 @@ make pre-commit-install
 ```
 
 Add your real Slack and Anthropic credentials to `.env`. Do not commit `.env`.
+CLI commands load `.env` from the current working directory automatically, and
+real environment variables override matching values from `.env`.
 
 To initialize or refresh the starter Obsidian vault structure:
 
 ```sh
-set -a
-source .env
-set +a
 make init-vault
 ```
 
@@ -56,6 +55,14 @@ make check
 ```
 
 `pytest` is configured to fail below 90% coverage.
+
+Live Anthropic smoke tests are skipped by default. To run the text, file upload,
+file-grounded message, and file cleanup checks intentionally against the API key
+in `.env`:
+
+```sh
+SLACK_VAULT_RUN_LIVE_AI_TESTS=1 uv run pytest tests/test_ai.py -k live -q --no-cov
+```
 
 ## Make Targets
 
