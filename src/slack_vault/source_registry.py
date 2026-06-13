@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,8 +11,9 @@ from slack_vault.archive import ArchivedSourceRef, format_datetime
 from slack_vault.enhancement import EnhancementResult
 from slack_vault.extraction import ExtractionResult
 
+logger = logging.getLogger(__name__)
+
 SOURCE_RECORDS_DIRECTORY = Path("20 Sources/sources")
-EVIDENCE_FENCE = "````"
 ENHANCEMENT_NOT_REQUESTED = "not_requested"
 
 
@@ -42,6 +44,8 @@ def write_source_record(
     *,
     extraction_result: ExtractionResult | None = None,
     enhancement_result: EnhancementResult | None = None,
+    evidence_artifact_uri: str | None = None,
+    evidence_artifact_schema: str | None = None,
     overwrite: bool = False,
 ) -> SourceRecordWriteResult:
     """Write a Markdown source record into the Obsidian vault."""
@@ -51,16 +55,29 @@ def write_source_record(
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     if target_path.exists() and not overwrite:
+        logger.info(
+            "Source record exists source_id=%s path=%s overwrite=false",
+            source_id,
+            target_path,
+        )
         return SourceRecordWriteResult(
             source_id=source_id, path=target_path, created=False
         )
 
+    logger.info(
+        "Writing source record source_id=%s path=%s overwrite=%s",
+        source_id,
+        target_path,
+        overwrite,
+    )
     target_path.write_text(
         render_source_record(
             ref,
             source_id,
             extraction_result=extraction_result,
             enhancement_result=enhancement_result,
+            evidence_artifact_uri=evidence_artifact_uri,
+            evidence_artifact_schema=evidence_artifact_schema,
         ),
         encoding="utf-8",
     )
@@ -73,6 +90,8 @@ def render_source_record(
     *,
     extraction_result: ExtractionResult | None = None,
     enhancement_result: EnhancementResult | None = None,
+    evidence_artifact_uri: str | None = None,
+    evidence_artifact_schema: str | None = None,
 ) -> str:
     """Render an archived source reference as Markdown."""
 
@@ -133,6 +152,8 @@ def render_source_record(
             "enhancement_cache_read_input_tokens": None
             if enhancement_result is None
             else enhancement_result.cache_read_input_tokens,
+            "evidence_artifact_uri": evidence_artifact_uri,
+            "evidence_artifact_schema": evidence_artifact_schema,
             "uploaded_by": ref.uploaded_by,
             "slack_workspace_id": ref.slack_workspace_id,
             "slack_channel_id": ref.slack_channel_id,
@@ -176,11 +197,17 @@ def render_source_record(
             "",
             "## Extracted Evidence",
             "",
-            *_render_extracted_evidence(extraction_result),
+            *_render_extracted_evidence(
+                extraction_result,
+                evidence_artifact_uri=evidence_artifact_uri,
+            ),
             "",
             "## Enhanced Evidence",
             "",
-            *_render_enhanced_evidence(enhancement_result),
+            *_render_enhanced_evidence(
+                enhancement_result,
+                evidence_artifact_uri=evidence_artifact_uri,
+            ),
             "",
         ]
     )
@@ -199,6 +226,8 @@ def _frontmatter(values: dict[str, object]) -> str:
 
 def _render_extracted_evidence(
     extraction_result: ExtractionResult | None,
+    *,
+    evidence_artifact_uri: str | None,
 ) -> list[str]:
     if extraction_result is None:
         return ["Extraction has not run yet."]
@@ -210,27 +239,16 @@ def _render_extracted_evidence(
     ]
     if extraction_result.error_message is not None:
         lines.append(f"- Error: {extraction_result.error_message}")
-    if not extraction_result.evidence:
-        return lines
-
-    for block in extraction_result.evidence:
-        lines.extend(
-            [
-                "",
-                f"### Evidence {block.sequence}",
-                "",
-                f"- Location: {block.location.label()}",
-                "",
-                f"{EVIDENCE_FENCE}text",
-                block.text,
-                EVIDENCE_FENCE,
-            ]
-        )
+    if evidence_artifact_uri is not None:
+        lines.append(f"- Full evidence artifact: `{evidence_artifact_uri}`")
+    lines.append("- Full extracted evidence is stored outside the Git-backed vault.")
     return lines
 
 
 def _render_enhanced_evidence(
     enhancement_result: EnhancementResult | None,
+    *,
+    evidence_artifact_uri: str | None,
 ) -> list[str]:
     if enhancement_result is None:
         return ["AI enhancement has not been requested."]
@@ -244,23 +262,9 @@ def _render_enhanced_evidence(
         lines.append(f"- Model: {enhancement_result.model}")
     if enhancement_result.error_message is not None:
         lines.append(f"- Error: {enhancement_result.error_message}")
-    if not enhancement_result.enhanced_evidence:
-        return lines
-
-    for block in enhancement_result.enhanced_evidence:
-        lines.extend(
-            [
-                "",
-                f"### Enhanced Evidence {block.sequence}",
-                "",
-                f"- Source evidence: Evidence {block.source_sequence}",
-                f"- Location: {block.location.label()}",
-                "",
-                f"{EVIDENCE_FENCE}markdown",
-                block.text,
-                EVIDENCE_FENCE,
-            ]
-        )
+    if evidence_artifact_uri is not None:
+        lines.append(f"- Full evidence artifact: `{evidence_artifact_uri}`")
+    lines.append("- Full enhanced evidence is stored outside the Git-backed vault.")
     return lines
 
 

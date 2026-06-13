@@ -1,4 +1,4 @@
-.PHONY: check dev format format-check install lint lint-fix pre-commit-install test typecheck
+.PHONY: check clean-poc-data dev format format-check install lint lint-fix pre-commit-install test typecheck
 
 dev: install pre-commit-install
 
@@ -27,3 +27,6 @@ test:
 	$(UV_RUN) pytest
 
 check: format-check lint typecheck test
+
+clean-poc-data:
+	$(UV_RUN) slack-vault clean-poc-data --yes

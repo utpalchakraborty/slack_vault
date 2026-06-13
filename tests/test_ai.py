@@ -30,10 +30,12 @@ from slack_vault.ai import (
     ANTHROPIC_FILES_BETA,
     AIPromptCacheConfig,
     AITextRequest,
+    AITextResponse,
     AIUploadedFile,
     AnthropicAIProvider,
+    RetryingAITextProvider,
 )
-from slack_vault.config import Settings
+from slack_vault.config import AIRetrySettings, Settings
 
 
 def test_anthropic_provider_sends_text_request_to_messages_api() -> None:
@@ -294,6 +296,91 @@ def test_anthropic_provider_from_settings_uses_configured_model_and_key() -> Non
     assert "sk-ant-test-value" not in repr(provider)
 
 
+def test_retrying_ai_provider_retries_retryable_status_errors() -> None:
+    provider = _FlakyTextProvider(
+        failures=[
+            _FakeStatusError(429, "rate limited"),
+            _FakeStatusError(503, "service unavailable"),
+        ],
+        response=_text_response("retry ok"),
+    )
+    sleeps: list[float] = []
+    retrying_provider = RetryingAITextProvider(
+        provider,
+        retry=AIRetrySettings(
+            max_attempts=3,
+            initial_delay_seconds=1.5,
+            max_delay_seconds=2.0,
+            backoff_multiplier=2.0,
+        ),
+        sleep=sleeps.append,
+    )
+
+    result = retrying_provider.complete_text(
+        AITextRequest(system_prompt="system", user_prompt="user")
+    )
+
+    assert result.text == "retry ok"
+    assert provider.calls == 3
+    assert sleeps == [1.5, 2.0]
+
+
+def test_retrying_ai_provider_raises_after_attempts_are_exhausted() -> None:
+    provider = _FlakyTextProvider(
+        failures=[
+            _FakeStatusError(429, "rate limited"),
+            _FakeStatusError(429, "still limited"),
+            _FakeStatusError(429, "still limited again"),
+        ],
+        response=_text_response("unused"),
+    )
+    sleeps: list[float] = []
+    retrying_provider = RetryingAITextProvider(
+        provider,
+        retry=AIRetrySettings(
+            max_attempts=3,
+            initial_delay_seconds=1.0,
+            max_delay_seconds=10.0,
+            backoff_multiplier=2.0,
+        ),
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(_FakeStatusError, match="still limited again"):
+        retrying_provider.complete_text(
+            AITextRequest(system_prompt="system", user_prompt="user")
+        )
+
+    assert provider.calls == 3
+    assert sleeps == [1.0, 2.0]
+
+
+def test_retrying_ai_provider_does_not_retry_non_retryable_errors() -> None:
+    provider = _FlakyTextProvider(
+        failures=[_FakeStatusError(400, "bad request")],
+        response=_text_response("unused"),
+    )
+    sleeps: list[float] = []
+    retrying_provider = RetryingAITextProvider(
+        provider,
+        retry=AIRetrySettings(
+            max_attempts=3,
+            initial_delay_seconds=1.0,
+            max_delay_seconds=10.0,
+            backoff_multiplier=2.0,
+        ),
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(_FakeStatusError, match="bad request"):
+        retrying_provider.complete_text(
+            AITextRequest(system_prompt="system", user_prompt="user")
+        )
+
+    assert provider.calls == 1
+    assert sleeps == []
+
+
 def test_anthropic_live_smoke_test(tmp_path: Path) -> None:
     if os.environ.get("SLACK_VAULT_RUN_LIVE_AI_TESTS") != "1":
         pytest.skip("set SLACK_VAULT_RUN_LIVE_AI_TESTS=1 to run live AI tests")
@@ -456,6 +543,40 @@ class _FakeAnthropicClient:
             beta_message_response=beta_message_response
             or _anthropic_beta_message(text="unused", model="claude-test-model"),
         )
+
+
+class _FlakyTextProvider:
+    def __init__(
+        self,
+        *,
+        failures: list[Exception],
+        response: AITextResponse,
+    ) -> None:
+        self.failures = failures
+        self.response = response
+        self.calls = 0
+
+    def complete_text(self, request: AITextRequest) -> AITextResponse:
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return self.response
+
+
+class _FakeStatusError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
+def _text_response(text: str) -> AITextResponse:
+    return AITextResponse(
+        text=text,
+        model="fake-model",
+        stop_reason="end_turn",
+        input_tokens=1,
+        output_tokens=1,
+    )
 
 
 def _anthropic_message(

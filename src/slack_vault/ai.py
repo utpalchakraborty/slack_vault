@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import logging
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
-from anthropic import Anthropic
+from anthropic import (
+    Anthropic,
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    RateLimitError,
+)
 from anthropic.types import (
     CacheControlEphemeralParam,
     Message,
@@ -28,10 +36,14 @@ from anthropic.types.beta import (
     FileMetadata,
 )
 
-from slack_vault.config import AIProvider, Settings
+from slack_vault.config import AIProvider, AIRetrySettings, Settings
 
 ANTHROPIC_FILES_BETA = "files-api-2025-04-14"
+RETRYABLE_AI_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504})
 PromptCacheTTL = Literal["5m", "1h"]
+SleepFunction = Callable[[float], None]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -103,6 +115,78 @@ class AIFileProvider(Protocol):
 
     def delete_file(self, file_id: str) -> bool:
         """Delete an uploaded provider file."""
+
+
+@dataclass(frozen=True)
+class RetryingAITextProvider:
+    """Retry transient failures from an AI text provider."""
+
+    provider: AITextProvider
+    retry: AIRetrySettings
+    sleep: SleepFunction = time.sleep
+
+    def __post_init__(self) -> None:
+        if self.retry.max_attempts < 1:
+            raise ValueError("AI retry max_attempts must be at least 1")
+        if self.retry.initial_delay_seconds < 0:
+            raise ValueError("AI retry initial delay must be non-negative")
+        if self.retry.max_delay_seconds < 0:
+            raise ValueError("AI retry max delay must be non-negative")
+        if self.retry.backoff_multiplier <= 0:
+            raise ValueError("AI retry backoff multiplier must be greater than 0")
+
+    def complete_text(self, request: AITextRequest) -> AITextResponse:
+        """Run a text completion, retrying transient provider failures."""
+
+        delay_seconds = self.retry.initial_delay_seconds
+        for attempt in range(1, self.retry.max_attempts + 1):
+            try:
+                return self.provider.complete_text(request)
+            except Exception as exc:
+                if attempt >= self.retry.max_attempts or not is_retryable_ai_error(exc):
+                    raise
+
+                logger.warning(
+                    "Retryable AI provider error attempt=%s max_attempts=%s "
+                    "delay_seconds=%s error_type=%s error=%s",
+                    attempt,
+                    self.retry.max_attempts,
+                    delay_seconds,
+                    type(exc).__name__,
+                    exc,
+                )
+                if delay_seconds > 0:
+                    self.sleep(delay_seconds)
+                delay_seconds = _next_retry_delay(
+                    delay_seconds,
+                    max_delay_seconds=self.retry.max_delay_seconds,
+                    backoff_multiplier=self.retry.backoff_multiplier,
+                )
+
+        raise RuntimeError("unreachable AI retry loop state")
+
+
+def is_retryable_ai_error(exc: Exception) -> bool:
+    """Return whether an AI provider error is safe to retry."""
+
+    if isinstance(exc, (RateLimitError, APITimeoutError, APIConnectionError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in RETRYABLE_AI_STATUS_CODES
+
+    status_code = getattr(exc, "status_code", None)
+    return isinstance(status_code, int) and status_code in RETRYABLE_AI_STATUS_CODES
+
+
+def _next_retry_delay(
+    delay_seconds: float,
+    *,
+    max_delay_seconds: float,
+    backoff_multiplier: float,
+) -> float:
+    if max_delay_seconds == 0:
+        return 0
+    return min(max_delay_seconds, delay_seconds * backoff_multiplier)
 
 
 class _AnthropicMessagesClient(Protocol):

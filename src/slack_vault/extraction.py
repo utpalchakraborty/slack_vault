@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import posixpath
 import re
 import zipfile
@@ -14,6 +15,8 @@ from xml.etree import ElementTree
 from pypdf import PdfReader
 
 from slack_vault.archive import ArchivedSourceRef
+
+logger = logging.getLogger(__name__)
 
 DOCX_MIME_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -400,13 +403,35 @@ def extract_document(
     for extractor in extractors or default_extractors():
         if not extractor.supports(ref, file_path):
             continue
+        logger.info(
+            "Extractor selected extractor=%s filename=%s mime_type=%s",
+            extractor.name,
+            ref.original_filename,
+            ref.mime_type,
+        )
         try:
-            return extractor.extract(ref, file_path)
+            result = extractor.extract(ref, file_path)
+            logger.info(
+                "Extractor completed extractor=%s evidence_blocks=%s",
+                extractor.name,
+                len(result.evidence),
+            )
+            return result
         except Exception as exc:
+            logger.exception(
+                "Extractor failed extractor=%s filename=%s",
+                extractor.name,
+                ref.original_filename,
+            )
             return ExtractionResult.failed(
                 extractor_name=extractor.name,
                 error_message=str(exc),
             )
+    logger.warning(
+        "No extractor supports source filename=%s mime_type=%s",
+        ref.original_filename,
+        ref.mime_type,
+    )
     return ExtractionResult.unsupported(ref)
 
 

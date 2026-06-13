@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import shutil
 from collections.abc import Iterable
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Protocol
 
 from slack_vault.config import ArchiveProviderKind
+
+logger = logging.getLogger(__name__)
 
 HASH_CHUNK_SIZE = 1024 * 1024
 
@@ -131,6 +134,12 @@ class LocalFilesystemArchiveProvider:
         content_hash = hash_file(source_path)
         existing_metadata_path = self._find_existing_metadata(content_hash)
         if existing_metadata_path is not None:
+            logger.info(
+                "Archive source already exists path=%s content_hash=%s metadata=%s",
+                source_path,
+                content_hash,
+                existing_metadata_path,
+            )
             return self._read_metadata(existing_metadata_path)
 
         created_at = normalize_datetime(now or datetime.now(UTC))
@@ -162,6 +171,13 @@ class LocalFilesystemArchiveProvider:
         metadata_path.write_text(
             json.dumps(ref.to_metadata_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
+        )
+        logger.info(
+            "Archive source saved path=%s archive_id=%s content_hash=%s size_bytes=%s",
+            source_path,
+            ref.archive_id,
+            ref.content_hash,
+            ref.size_bytes,
         )
         return ref
 

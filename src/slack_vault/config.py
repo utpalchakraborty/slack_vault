@@ -14,6 +14,14 @@ from dotenv import dotenv_values
 
 DEFAULT_OBSIDIAN_VAULT_PATH = Path("/Users/utpalrohan/code/slack_obsidian")
 DEFAULT_ARCHIVE_PATH = ".data/archive"
+DEFAULT_LOG_PATH = Path(".data/logs/slack-vault.log")
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_BACKUP_COUNT = 14
+DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS = 75.0
+DEFAULT_AI_RETRY_MAX_ATTEMPTS = 3
+DEFAULT_AI_RETRY_INITIAL_DELAY_SECONDS = 60.0
+DEFAULT_AI_RETRY_MAX_DELAY_SECONDS = 300.0
+DEFAULT_AI_RETRY_BACKOFF_MULTIPLIER = 2.0
 DEFAULT_ENV_FILE = Path(".env")
 _ENV_FILE_UNSET: Final = object()
 
@@ -47,6 +55,16 @@ class SlackSettings:
 
 
 @dataclass(frozen=True)
+class AIRetrySettings:
+    """Retry policy for transient AI provider failures."""
+
+    max_attempts: int
+    initial_delay_seconds: float
+    max_delay_seconds: float
+    backoff_multiplier: float
+
+
+@dataclass(frozen=True)
 class AISettings:
     """AI provider and model settings."""
 
@@ -55,6 +73,23 @@ class AISettings:
     model: str
     max_input_tokens: int
     max_output_tokens: int
+    retry: AIRetrySettings
+
+
+@dataclass(frozen=True)
+class LoggingSettings:
+    """Application logging settings."""
+
+    path: Path
+    level: str
+    backup_count: int
+
+
+@dataclass(frozen=True)
+class IngestionSettings:
+    """Ingestion orchestration settings."""
+
+    automatic_ingest_delay_seconds: float
 
 
 @dataclass(frozen=True)
@@ -67,6 +102,8 @@ class Settings:
     archive_path: str
     slack: SlackSettings
     ai: AISettings
+    logging: LoggingSettings
+    ingestion: IngestionSettings
 
     @classmethod
     def from_env(
@@ -124,6 +161,48 @@ class Settings:
                     "SLACK_VAULT_AI_MAX_OUTPUT_TOKENS",
                     ANTHROPIC_HAIKU_45_MAX_OUTPUT_TOKENS,
                 ),
+                retry=AIRetrySettings(
+                    max_attempts=_positive_int_value(
+                        values,
+                        "SLACK_VAULT_AI_RETRY_MAX_ATTEMPTS",
+                        DEFAULT_AI_RETRY_MAX_ATTEMPTS,
+                    ),
+                    initial_delay_seconds=_non_negative_float_value(
+                        values,
+                        "SLACK_VAULT_AI_RETRY_INITIAL_DELAY_SECONDS",
+                        DEFAULT_AI_RETRY_INITIAL_DELAY_SECONDS,
+                    ),
+                    max_delay_seconds=_non_negative_float_value(
+                        values,
+                        "SLACK_VAULT_AI_RETRY_MAX_DELAY_SECONDS",
+                        DEFAULT_AI_RETRY_MAX_DELAY_SECONDS,
+                    ),
+                    backoff_multiplier=_positive_float_value(
+                        values,
+                        "SLACK_VAULT_AI_RETRY_BACKOFF_MULTIPLIER",
+                        DEFAULT_AI_RETRY_BACKOFF_MULTIPLIER,
+                    ),
+                ),
+            ),
+            logging=LoggingSettings(
+                path=_path_value(
+                    values,
+                    "SLACK_VAULT_LOG_PATH",
+                    DEFAULT_LOG_PATH,
+                ),
+                level=values.get("SLACK_VAULT_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper(),
+                backup_count=_int_value(
+                    values,
+                    "SLACK_VAULT_LOG_BACKUP_COUNT",
+                    DEFAULT_LOG_BACKUP_COUNT,
+                ),
+            ),
+            ingestion=IngestionSettings(
+                automatic_ingest_delay_seconds=_non_negative_float_value(
+                    values,
+                    "SLACK_VAULT_AUTOMATIC_INGEST_DELAY_SECONDS",
+                    DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS,
+                ),
             ),
         )
 
@@ -147,6 +226,22 @@ class Settings:
                 "model": self.ai.model,
                 "max_input_tokens": self.ai.max_input_tokens,
                 "max_output_tokens": self.ai.max_output_tokens,
+                "retry": {
+                    "max_attempts": self.ai.retry.max_attempts,
+                    "initial_delay_seconds": self.ai.retry.initial_delay_seconds,
+                    "max_delay_seconds": self.ai.retry.max_delay_seconds,
+                    "backoff_multiplier": self.ai.retry.backoff_multiplier,
+                },
+            },
+            "logging": {
+                "path": str(self.logging.path),
+                "level": self.logging.level,
+                "backup_count": self.logging.backup_count,
+            },
+            "ingestion": {
+                "automatic_ingest_delay_seconds": (
+                    self.ingestion.automatic_ingest_delay_seconds
+                ),
             },
         }
         return json.dumps(data, indent=2, sort_keys=True)
@@ -199,6 +294,42 @@ def _int_value(values: Mapping[str, str], key: str, default: int) -> int:
     if raw_value is None or not raw_value.strip():
         return default
     return int(raw_value)
+
+
+def _positive_int_value(values: Mapping[str, str], key: str, default: int) -> int:
+    value = _int_value(values, key, default)
+    if value < 1:
+        raise ValueError(f"{key} must be at least 1")
+    return value
+
+
+def _float_value(values: Mapping[str, str], key: str, default: float) -> float:
+    raw_value = values.get(key)
+    if raw_value is None or not raw_value.strip():
+        return default
+    return float(raw_value)
+
+
+def _non_negative_float_value(
+    values: Mapping[str, str],
+    key: str,
+    default: float,
+) -> float:
+    value = _float_value(values, key, default)
+    if value < 0:
+        raise ValueError(f"{key} must be non-negative")
+    return value
+
+
+def _positive_float_value(
+    values: Mapping[str, str],
+    key: str,
+    default: float,
+) -> float:
+    value = _float_value(values, key, default)
+    if value <= 0:
+        raise ValueError(f"{key} must be greater than 0")
+    return value
 
 
 def _blank_to_none(value: str | None) -> str | None:

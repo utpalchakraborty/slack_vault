@@ -60,6 +60,13 @@ These choices are defaults for the POC and can be revised before coding.
 - The configured vault path is read from `SLACK_VAULT_OBSIDIAN_PATH`.
 - The local archive path is read from `SLACK_VAULT_ARCHIVE_PATH` and defaults
   to `.data/archive` in the app repository.
+- Original source files and full extracted/enhanced evidence artifacts are kept
+  outside the Git-backed Obsidian vault. Vault source records are lightweight
+  provenance records with status, counts, and artifact pointers.
+- The local log path is read from `SLACK_VAULT_LOG_PATH` and defaults to
+  `.data/logs/slack-vault.log` in the app repository.
+- Logs rotate daily at midnight, rotated logs are gzip-compressed, and the
+  retained rotated-log count is read from `SLACK_VAULT_LOG_BACKUP_COUNT`.
 - The AI provider is read from `SLACK_VAULT_AI_PROVIDER` and defaults to
   `anthropic`.
 - Anthropic credentials are read from `ANTHROPIC_API_KEY`.
@@ -86,10 +93,53 @@ Status as of 2026-06-13:
   - `AnthropicEvidenceEnhancer` using the text provider harness;
   - source-record `enhancement_status` metadata separate from
     `extraction_status`;
-  - a separate `## Enhanced Evidence` section that preserves links back to the
-    deterministic evidence sequence and source location;
+  - full enhanced evidence is stored in the outside-vault evidence artifact and
+    preserves links back to deterministic evidence sequence and source location;
   - `slack-vault ingest-file --enhance` and
     `make ingest-file FILE=... ENHANCE=1`.
+- Phase 3 initial local synthesis is implemented as an opt-in local ingest
+  path:
+  - `AnthropicKnowledgeSynthesizer` classifies source evidence, suggests
+    taxonomy metadata, asks the model to match existing notes, and writes a
+    knowledge note under `10 Knowledge/`;
+  - existing notes are scanned from the vault and included in the synthesis
+    prompt;
+  - strong AI note matches update the existing note, while weak or missing
+    matches create a new note and record uncertainty metadata;
+  - generated notes include frontmatter, source IDs, Obsidian source backlinks,
+    citation lines, summary, and Markdown details;
+  - `slack-vault ingest-file --synthesize` and
+    `make ingest-file FILE=... SYNTHESIZE=1`.
+- Source records no longer embed full extracted/enhanced evidence in the vault.
+  `src/slack_vault/evidence_store.py` writes full evidence JSON under
+  `.data/archive/derived/evidence/<source-id>/evidence.json`, while vault source
+  records retain provenance, status, counts, and artifact pointers.
+- Live DOCX smoke testing showed that long-running ingestion needs visible
+  progress logs. The app now configures package logging for CLI runs, writes to
+  `.data/logs/slack-vault.log` by default, rotates at midnight, gzip-compresses
+  rotated logs, and logs archive, extraction, enhancement, source-record, and
+  synthesis lifecycle events.
+- Live Git-commit smoke testing showed that Anthropic 429 rate limits must not
+  produce source-record-only commits when synthesis was requested. AI text calls
+  now retry transient provider failures, requested enhancement or synthesis
+  failures stop the ingest before vault source-record writes and Git commits,
+  and sequential automatic ingest flows have a configurable
+  `SLACK_VAULT_AUTOMATIC_INGEST_DELAY_SECONDS` pause between documents for the
+  later Slack ingestion worker.
+- Phase 4 Git commit integration is implemented for local ingest:
+  - normal CLI/Make ingest requires a clean vault Git worktree before writing
+    files;
+  - successful ingest stages and commits the generated source record and
+    knowledge note paths;
+  - archive binaries and full evidence artifacts remain outside the vault and
+    are not staged;
+  - `slack-vault ingest-file --no-git-commit` and
+    `make ingest-file FILE=... NO_GIT_COMMIT=1` keep local development runs from
+    committing.
+- Local POC reset tooling is available for repeated smoke-test loops:
+  `slack-vault clean-poc-data --yes` and `make clean-poc-data` remove generated
+  knowledge notes, generated source records, and the local archive path while
+  leaving input files such as sample DOCX documents in place.
 - Latest pushed code repository commit before the prompt-caching and
   enhancement slice: `c4ecb2f Add Anthropic provider groundwork`.
 - Obsidian vault repository commit:
@@ -108,11 +158,10 @@ Status as of 2026-06-13:
 - The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
   app state ignored.
 
-Next implementation phase: Phase 3 classification, taxonomy selection, note
-matching, and knowledge-note synthesis. Phase 2b can be extended later with
-file-grounded enhancement for large or complex originals, richer table
-interpretation prompts, and per-block enhancement policy, but those are not
-required to start Phase 3.
+Next implementation phase: Phase 5 Local Retrieval and Q&A. Broader synthesis
+quality tuning, richer note-update behavior, and repeated live-document
+hardening are intentionally tracked later in Phase 10 so the POC can first
+complete the full ingestion-to-question-answering loop.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -249,15 +298,16 @@ Phase 2a must not require Slack or AI credentials.
   - heading, paragraph, or table-level for Word where practical;
   - sheet and cell-range-level for Excel when added.
 - Extraction status updates in source records.
-- CLI path that archives a local file and writes extracted evidence into the
-  source record.
+- CLI path that archives a local file, stores extracted evidence outside the
+  vault, and writes extraction provenance into the source record.
 - Tests using small committed fixtures or programmatically generated fixtures.
 
 #### Acceptance Criteria
 
 - Sample Markdown, text, PDF, Word, and Excel files produce readable extracted
   evidence.
-- Source records show extraction status and extracted evidence.
+- Source records show extraction status, evidence counts, and the outside-vault
+  evidence artifact pointer.
 - Extraction failures are recorded without corrupting the vault.
 - Tests cover all initial extractors using small fixtures.
 - Tests verify source anchors such as file names, headings, PDF page numbers, and
@@ -273,8 +323,9 @@ Phase 2a is implemented in the working tree.
 - PDF extraction uses `pypdf`; DOCX and XLSX extraction use the ZIP/XML
   structure directly.
 - `slack-vault ingest-file` archives the source, extracts evidence from the
-  archived copy, writes extraction status and evidence into the source record,
-  and prints extraction status in CLI output.
+  archived copy, writes full evidence JSON outside the vault, writes extraction
+  status and artifact metadata into the source record, and prints extraction
+  status in CLI output.
 - Extraction failures and unsupported file types are recorded as source-record
   status instead of aborting source-record creation.
 
@@ -367,7 +418,8 @@ AI evidence enhancement.
   `enhanced_text`, records invalid AI responses as failed enhancement results,
   and preserves each block's deterministic source sequence and location.
 - `src/slack_vault/source_registry.py` writes enhancement metadata to
-  frontmatter and renders enhanced evidence separately from extracted evidence.
+  frontmatter and links to the outside-vault evidence artifact rather than
+  embedding full enhanced evidence in the vault.
 - `src/slack_vault/ingest.py` accepts an optional `EvidenceEnhancer`. When it is
   absent, deterministic ingest still works and source records show
   `enhancement_status: "not_requested"`.
@@ -385,8 +437,9 @@ AI evidence enhancement.
   completion, uploads a tiny temporary file, asks a file-grounded question, and
   deletes the uploaded file.
 - The live Phase 2b enhancement smoke test creates a temporary Markdown source,
-  runs archive, deterministic extraction, Anthropic enhancement, and source
-  record writing, then verifies both extracted and enhanced evidence are present.
+  runs archive, deterministic extraction, Anthropic enhancement, evidence
+  artifact writing, and source record writing, then verifies both extracted and
+  enhanced evidence are preserved outside the vault.
 
 Validation:
 
@@ -454,12 +507,35 @@ Use AI to transform extracted or enhanced evidence into Obsidian knowledge notes
 
 - A sample source document creates a source record and at least one knowledge
   note.
-- A second related source document updates the same knowledge note when
-  appropriate.
+- Mocked tests cover updating the same knowledge note when a strong match is
+  returned.
 - Generated knowledge notes include frontmatter, backlinks, source citations,
   and a readable Markdown body.
 - The generated vault remains usable in Obsidian.
 - Tests cover prompt input/output parsing with mocked AI responses.
+- Live related-document update behavior, note-splitting policy, citation
+  quality, and human-edit preservation are deferred to Phase 10 after the full
+  round-trip POC exists.
+
+### Initial Implementation Notes
+
+The first Phase 3 slice is implemented without Slack or Git commit integration.
+
+- `src/slack_vault/synthesis.py` defines the synthesis interface, Anthropic
+  implementation, source classification metadata, citation model, existing-note
+  reader, knowledge-note writer, and mocked-testable JSON prompt contract.
+- `slack-vault ingest-file --synthesize` runs archive, extraction, optional
+  enhancement, outside-vault evidence artifact writing, knowledge synthesis,
+  source-record writing, then optional Git commit.
+- `make ingest-file FILE=path/to/source.md SYNTHESIZE=1` provides the Make
+  wrapper. `ENHANCE=1 SYNTHESIZE=1` uses enhanced evidence for synthesis when
+  enhancement succeeds.
+- Failed requested synthesis fails the ingest before vault source-record writing
+  and Git commit. Skipped synthesis, such as no extracted evidence, can still
+  create a source record for auditability.
+- `tests/test_synthesis.py` covers mocked AI create/update decisions, weak-match
+  new-note creation, enhanced-evidence selection, invalid AI responses, skipped
+  synthesis, and existing-note scanning.
 
 ## 8. Phase 4: Git Commit Integration
 
@@ -482,6 +558,26 @@ Make every successful ingestion auditable through Git history.
   and no archive binaries.
 - The commit message includes source ID and updated notes.
 - Tests cover commit message generation and dirty-repo handling where practical.
+
+### Implementation Notes
+
+Phase 4 is implemented for the local ingest path.
+
+- `src/slack_vault/git_vault.py` detects the vault Git worktree, enforces a
+  clean worktree before commit-mode ingest, stages only generated vault paths,
+  builds structured ingest commit messages, and commits through Git.
+- CLI ingest commits by default. `--no-git-commit` is the local development mode
+  for writing files without committing.
+- The Make wrapper exposes the same behavior with `NO_GIT_COMMIT=1`.
+- Dirty vault repositories fail before archive/extraction/write work begins, so
+  an ingest does not overwrite pending human or previous generated changes.
+- Requested AI enhancement or synthesis failures fail the ingest before writing
+  a vault source record or creating a vault Git commit. This prevents a
+  rate-limited synthesis run from committing only the source record and looking
+  like a successful full ingest.
+- Tests cover commit message generation, successful temp-repo commits,
+  no-change skipped commits, non-Git vault errors, dirty-vault errors, ingest
+  orchestration, failed requested AI stages, and CLI commit/no-commit behavior.
 
 ## 9. Phase 5: Local Retrieval And Q&A
 
@@ -615,7 +711,54 @@ production too early.
 - The shared deployment plan identifies required services, credentials, and
   operational ownership.
 
-## 14. Deferred Until After POC
+## 14. Phase 10: Knowledge Synthesis POC Hardening
+
+### Goal
+
+Return to Phase 3 synthesis after the full local-to-Slack-to-Q&A loop works, and
+harden note quality, update behavior, and citation usefulness using real POC
+usage feedback.
+
+This phase intentionally happens after the first round-trip pipeline exists so
+the synthesis hardening work is grounded in actual documents, real retrieval
+needs, and Slack Q&A behavior rather than speculative prompt polishing.
+
+### Deliverables
+
+- Live related-document update smoke tests.
+- Note update strategy that preserves:
+  - original `created_at`;
+  - source history;
+  - existing source citations;
+  - future human edits where practical.
+- Clear large-document note policy:
+  - single note;
+  - multiple section/domain notes;
+  - map/index note plus child notes.
+- Citation quality improvements:
+  - tighter inline citations where helpful;
+  - source-record backlinks;
+  - evidence artifact references when deeper audit is needed.
+- Prompt versioning for synthesis prompts.
+- Regression fixtures from representative POC documents.
+- Taxonomy consistency pass based on the notes produced during POC usage.
+- Reprocess/regenerate workflow for improving existing generated notes without
+  re-archiving the original source.
+
+### Acceptance Criteria
+
+- A second related live source updates the appropriate existing note without
+  losing prior source history.
+- Existing human edits are preserved or conflicts are surfaced clearly.
+- Large documents follow a documented split-or-single-note policy.
+- Generated citations are useful for both human reading and future Q&A
+  grounding.
+- Representative POC documents have regression fixtures or saved expected-shape
+  checks.
+- The Git-backed vault still contains only Markdown knowledge artifacts and
+  lightweight source records, with no original binaries or full evidence dumps.
+
+## 15. Deferred Until After POC
 
 - Permission-aware retrieval.
 - Multiple Slack workspaces or Enterprise Grid.
@@ -628,7 +771,7 @@ production too early.
 - Large-scale vector indexing and re-ranking.
 - Continuous ingestion from arbitrary Slack channels.
 
-## 15. Resolved And Remaining Early Decisions
+## 16. Resolved And Remaining Early Decisions
 
 These decisions guide the early implementation phases. Resolved items should
 remain documented so future implementation work does not reopen settled Phase 0

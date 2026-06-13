@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -15,6 +16,8 @@ from slack_vault.extraction import (
     ExtractionResult,
     ExtractionStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_ENHANCEMENT_MAX_OUTPUT_TOKENS = 2_048
 ENHANCEMENT_SYSTEM_PROMPT = """You enhance source-grounded evidence for Slack Vault.
@@ -146,12 +149,29 @@ class AnthropicEvidenceEnhancer:
     ) -> EnhancementResult:
         """Enhance each deterministic evidence block with AI."""
 
+        logger.info(
+            "Evidence enhancement started enhancer=%s filename=%s "
+            "extraction_status=%s evidence_blocks=%s",
+            self.name,
+            ref.original_filename,
+            extraction_result.status.value,
+            len(extraction_result.evidence),
+        )
         if extraction_result.status is not ExtractionStatus.COMPLETED:
+            logger.info(
+                "Evidence enhancement skipped enhancer=%s reason=extraction_status_%s",
+                self.name,
+                extraction_result.status.value,
+            )
             return EnhancementResult.skipped(
                 enhancer_name=self.name,
                 reason=f"Extraction status is {extraction_result.status.value}.",
             )
         if not extraction_result.evidence:
+            logger.info(
+                "Evidence enhancement skipped enhancer=%s reason=no_evidence",
+                self.name,
+            )
             return EnhancementResult.skipped(
                 enhancer_name=self.name,
                 reason="No deterministic evidence blocks to enhance.",
@@ -166,6 +186,12 @@ class AnthropicEvidenceEnhancer:
 
         try:
             for block in extraction_result.evidence:
+                logger.debug(
+                    "Enhancing evidence block enhancer=%s sequence=%s location=%s",
+                    self.name,
+                    block.sequence,
+                    block.location.label(),
+                )
                 response = self.provider.complete_text(
                     AITextRequest(
                         system_prompt=ENHANCEMENT_SYSTEM_PROMPT,
@@ -189,11 +215,24 @@ class AnthropicEvidenceEnhancer:
                 cache_read_input_tokens += response.cache_read_input_tokens
                 model = response.model
         except Exception as exc:
+            logger.exception("Evidence enhancement failed enhancer=%s", self.name)
             return EnhancementResult.failed(
                 enhancer_name=self.name,
                 error_message=str(exc),
             )
 
+        logger.info(
+            "Evidence enhancement completed enhancer=%s enhanced_blocks=%s model=%s "
+            "input_tokens=%s output_tokens=%s cache_creation_input_tokens=%s "
+            "cache_read_input_tokens=%s",
+            self.name,
+            len(enhanced_blocks),
+            model,
+            input_tokens,
+            output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        )
         return EnhancementResult.completed(
             enhancer_name=self.name,
             enhanced_evidence=tuple(enhanced_blocks),

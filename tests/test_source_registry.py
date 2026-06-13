@@ -60,16 +60,28 @@ def test_render_source_record_includes_extracted_evidence() -> None:
                 ),
             ),
         ),
+        evidence_artifact_uri=".data/archive/derived/evidence/source-test/evidence.json",
+        evidence_artifact_schema="slack_vault.evidence.v1",
     )
 
     assert 'extraction_status: "completed"' in markdown
     assert 'extractor_name: "markdown"' in markdown
     assert "extracted_evidence_count: 1" in markdown
+    expected_artifact_frontmatter = (
+        "evidence_artifact_uri: "
+        '".data/archive/derived/evidence/source-test/evidence.json"'
+    )
+    assert expected_artifact_frontmatter in markdown
+    assert 'evidence_artifact_schema: "slack_vault.evidence.v1"' in markdown
     assert "- Status: completed" in markdown
     assert "- Evidence blocks: 1" in markdown
-    assert "### Evidence 1" in markdown
-    assert '- Location: Example Plan.md, heading "Overview"' in markdown
-    assert "# Overview\n\nEvidence body." in markdown
+    assert (
+        "- Full evidence artifact: "
+        "`.data/archive/derived/evidence/source-test/evidence.json`"
+    ) in markdown
+    assert "Full extracted evidence is stored outside the Git-backed vault." in markdown
+    assert "### Evidence 1" not in markdown
+    assert "# Overview\n\nEvidence body." not in markdown
 
 
 def test_render_source_record_includes_enhanced_evidence() -> None:
@@ -109,6 +121,8 @@ def test_render_source_record_includes_enhanced_evidence() -> None:
             cache_creation_input_tokens=80,
             cache_read_input_tokens=40,
         ),
+        evidence_artifact_uri=".data/archive/derived/evidence/source-test/evidence.json",
+        evidence_artifact_schema="slack_vault.evidence.v1",
     )
 
     assert 'enhancement_status: "completed"' in markdown
@@ -119,10 +133,13 @@ def test_render_source_record_includes_enhanced_evidence() -> None:
     assert "enhancement_cache_read_input_tokens: 40" in markdown
     assert "## Extracted Evidence" in markdown
     assert "## Enhanced Evidence" in markdown
-    assert "### Enhanced Evidence 1" in markdown
-    assert "- Source evidence: Evidence 1" in markdown
-    assert '- Location: Example Plan.md, heading "Overview"' in markdown
-    assert "Clean evidence body." in markdown
+    assert (
+        "- Full evidence artifact: "
+        "`.data/archive/derived/evidence/source-test/evidence.json`"
+    ) in markdown
+    assert "Full enhanced evidence is stored outside the Git-backed vault." in markdown
+    assert "### Enhanced Evidence 1" not in markdown
+    assert "Clean evidence body." not in markdown
 
 
 def test_write_source_record_is_idempotent_without_overwrite(tmp_path: Path) -> None:
