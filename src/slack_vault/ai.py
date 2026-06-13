@@ -6,11 +6,19 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from anthropic import Anthropic
-from anthropic.types import Message, MessageParam, ModelParam, TextBlock
+from anthropic.types import (
+    CacheControlEphemeralParam,
+    Message,
+    MessageParam,
+    ModelParam,
+    TextBlock,
+    TextBlockParam,
+)
 from anthropic.types.beta import (
+    BetaCacheControlEphemeralParam,
     BetaMessage,
     BetaMessageParam,
     BetaRequestDocumentBlockParam,
@@ -23,6 +31,18 @@ from anthropic.types.beta import (
 from slack_vault.config import AIProvider, Settings
 
 ANTHROPIC_FILES_BETA = "files-api-2025-04-14"
+PromptCacheTTL = Literal["5m", "1h"]
+
+
+@dataclass(frozen=True)
+class AIPromptCacheConfig:
+    """Provider-independent prompt cache settings for a request."""
+
+    enabled: bool = True
+    ttl: PromptCacheTTL = "5m"
+    automatic: bool = True
+    cache_system_prompt: bool = False
+    cache_uploaded_files: bool = False
 
 
 @dataclass(frozen=True)
@@ -34,6 +54,7 @@ class AITextRequest:
     model: str | None = None
     max_output_tokens: int | None = None
     temperature: float | None = None
+    prompt_cache: AIPromptCacheConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +66,8 @@ class AITextResponse:
     stop_reason: str | None
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -89,7 +112,8 @@ class _AnthropicMessagesClient(Protocol):
         max_tokens: int,
         messages: Iterable[MessageParam],
         model: ModelParam,
-        system: str,
+        system: str | Iterable[TextBlockParam],
+        cache_control: CacheControlEphemeralParam | None = None,
         temperature: float | None = None,
     ) -> object:
         """Create an Anthropic message."""
@@ -110,8 +134,9 @@ class _AnthropicBetaMessagesClient(Protocol):
         max_tokens: int,
         messages: Iterable[BetaMessageParam],
         model: ModelParam,
-        system: str,
+        system: str | Iterable[BetaTextBlockParam],
         betas: list[str],
+        cache_control: BetaCacheControlEphemeralParam | None = None,
         temperature: float | None = None,
     ) -> object:
         """Create an Anthropic beta message."""
@@ -144,6 +169,7 @@ class AnthropicAIProvider:
     api_key: str = field(repr=False)
     model: str
     max_output_tokens: int
+    prompt_cache: AIPromptCacheConfig | None = None
     client: _AnthropicClient | None = field(default=None, repr=False)
 
     @classmethod
@@ -168,6 +194,9 @@ class AnthropicAIProvider:
 
         model = request.model or self.model
         max_tokens = request.max_output_tokens or self.max_output_tokens
+        prompt_cache = self._prompt_cache_config(request)
+        system = _anthropic_system_prompt(request.system_prompt, prompt_cache)
+        cache_control = _anthropic_automatic_cache_control(prompt_cache)
         messages: tuple[MessageParam, ...] = (
             {
                 "role": "user",
@@ -177,26 +206,51 @@ class AnthropicAIProvider:
         client = self._client()
 
         if request.temperature is None:
-            message = cast(
-                Message,
-                client.messages.create(
-                    max_tokens=max_tokens,
-                    messages=messages,
-                    model=model,
-                    system=request.system_prompt,
-                ),
-            )
+            if cache_control is None:
+                message = cast(
+                    Message,
+                    client.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                    ),
+                )
+            else:
+                message = cast(
+                    Message,
+                    client.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        cache_control=cache_control,
+                    ),
+                )
         else:
-            message = cast(
-                Message,
-                client.messages.create(
-                    max_tokens=max_tokens,
-                    messages=messages,
-                    model=model,
-                    system=request.system_prompt,
-                    temperature=request.temperature,
-                ),
-            )
+            if cache_control is None:
+                message = cast(
+                    Message,
+                    client.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        temperature=request.temperature,
+                    ),
+                )
+            else:
+                message = cast(
+                    Message,
+                    client.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        cache_control=cache_control,
+                        temperature=request.temperature,
+                    ),
+                )
 
         return AITextResponse(
             text=_message_text(message),
@@ -206,6 +260,8 @@ class AnthropicAIProvider:
             else str(message.stop_reason),
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,
+            cache_creation_input_tokens=message.usage.cache_creation_input_tokens or 0,
+            cache_read_input_tokens=message.usage.cache_read_input_tokens or 0,
         )
 
     def upload_file(self, file_path: Path) -> AIUploadedFile:
@@ -235,36 +291,66 @@ class AnthropicAIProvider:
 
         model = request.model or self.model
         max_tokens = request.max_output_tokens or self.max_output_tokens
+        prompt_cache = self._prompt_cache_config(request)
+        system = _anthropic_beta_system_prompt(request.system_prompt, prompt_cache)
+        cache_control = _anthropic_beta_automatic_cache_control(prompt_cache)
         content: list[BetaRequestDocumentBlockParam | BetaTextBlockParam] = [
-            _uploaded_file_document_block(file) for file in files
+            _uploaded_file_document_block(file, prompt_cache) for file in files
         ]
         content.append({"type": "text", "text": request.user_prompt})
         messages: tuple[BetaMessageParam, ...] = ({"role": "user", "content": content},)
         client = self._client()
 
         if request.temperature is None:
-            message = cast(
-                BetaMessage,
-                client.beta.messages.create(
-                    max_tokens=max_tokens,
-                    messages=messages,
-                    model=model,
-                    system=request.system_prompt,
-                    betas=[ANTHROPIC_FILES_BETA],
-                ),
-            )
+            if cache_control is None:
+                message = cast(
+                    BetaMessage,
+                    client.beta.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        betas=[ANTHROPIC_FILES_BETA],
+                    ),
+                )
+            else:
+                message = cast(
+                    BetaMessage,
+                    client.beta.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        betas=[ANTHROPIC_FILES_BETA],
+                        cache_control=cache_control,
+                    ),
+                )
         else:
-            message = cast(
-                BetaMessage,
-                client.beta.messages.create(
-                    max_tokens=max_tokens,
-                    messages=messages,
-                    model=model,
-                    system=request.system_prompt,
-                    betas=[ANTHROPIC_FILES_BETA],
-                    temperature=request.temperature,
-                ),
-            )
+            if cache_control is None:
+                message = cast(
+                    BetaMessage,
+                    client.beta.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        betas=[ANTHROPIC_FILES_BETA],
+                        temperature=request.temperature,
+                    ),
+                )
+            else:
+                message = cast(
+                    BetaMessage,
+                    client.beta.messages.create(
+                        max_tokens=max_tokens,
+                        messages=messages,
+                        model=model,
+                        system=system,
+                        betas=[ANTHROPIC_FILES_BETA],
+                        cache_control=cache_control,
+                        temperature=request.temperature,
+                    ),
+                )
 
         return AITextResponse(
             text=_beta_message_text(message),
@@ -274,6 +360,8 @@ class AnthropicAIProvider:
             else str(message.stop_reason),
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,
+            cache_creation_input_tokens=message.usage.cache_creation_input_tokens or 0,
+            cache_read_input_tokens=message.usage.cache_read_input_tokens or 0,
         )
 
     def delete_file(self, file_id: str) -> bool:
@@ -286,6 +374,14 @@ class AnthropicAIProvider:
         if self.client is not None:
             return self.client
         return cast(_AnthropicClient, Anthropic(api_key=self.api_key))
+
+    def _prompt_cache_config(
+        self,
+        request: AITextRequest,
+    ) -> AIPromptCacheConfig | None:
+        if request.prompt_cache is not None:
+            return request.prompt_cache
+        return self.prompt_cache
 
 
 def _message_text(message: Message) -> str:
@@ -302,8 +398,9 @@ def _beta_message_text(message: BetaMessage) -> str:
 
 def _uploaded_file_document_block(
     uploaded_file: AIUploadedFile,
+    prompt_cache: AIPromptCacheConfig | None,
 ) -> BetaRequestDocumentBlockParam:
-    return {
+    block: BetaRequestDocumentBlockParam = {
         "type": "document",
         "title": uploaded_file.filename,
         "source": {
@@ -311,3 +408,109 @@ def _uploaded_file_document_block(
             "file_id": uploaded_file.file_id,
         },
     }
+    cache_control = _anthropic_beta_uploaded_file_cache_control(prompt_cache)
+    if cache_control is not None:
+        block["cache_control"] = cache_control
+    return block
+
+
+def _anthropic_system_prompt(
+    system_prompt: str,
+    prompt_cache: AIPromptCacheConfig | None,
+) -> str | tuple[TextBlockParam, ...]:
+    cache_control = _anthropic_explicit_cache_control(prompt_cache)
+    if cache_control is None:
+        return system_prompt
+    return (
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": cache_control,
+        },
+    )
+
+
+def _anthropic_beta_system_prompt(
+    system_prompt: str,
+    prompt_cache: AIPromptCacheConfig | None,
+) -> str | tuple[BetaTextBlockParam, ...]:
+    cache_control = _anthropic_beta_system_cache_control(prompt_cache)
+    if cache_control is None:
+        return system_prompt
+    return (
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": cache_control,
+        },
+    )
+
+
+def _anthropic_automatic_cache_control(
+    prompt_cache: AIPromptCacheConfig | None,
+) -> CacheControlEphemeralParam | None:
+    if prompt_cache is None or not prompt_cache.enabled or not prompt_cache.automatic:
+        return None
+    return _anthropic_cache_control(prompt_cache)
+
+
+def _anthropic_beta_automatic_cache_control(
+    prompt_cache: AIPromptCacheConfig | None,
+) -> BetaCacheControlEphemeralParam | None:
+    if prompt_cache is None or not prompt_cache.enabled or not prompt_cache.automatic:
+        return None
+    return _anthropic_beta_cache_control(prompt_cache)
+
+
+def _anthropic_explicit_cache_control(
+    prompt_cache: AIPromptCacheConfig | None,
+) -> CacheControlEphemeralParam | None:
+    if (
+        prompt_cache is None
+        or not prompt_cache.enabled
+        or not prompt_cache.cache_system_prompt
+    ):
+        return None
+    return _anthropic_cache_control(prompt_cache)
+
+
+def _anthropic_beta_system_cache_control(
+    prompt_cache: AIPromptCacheConfig | None,
+) -> BetaCacheControlEphemeralParam | None:
+    if (
+        prompt_cache is None
+        or not prompt_cache.enabled
+        or not prompt_cache.cache_system_prompt
+    ):
+        return None
+    return _anthropic_beta_cache_control(prompt_cache)
+
+
+def _anthropic_beta_uploaded_file_cache_control(
+    prompt_cache: AIPromptCacheConfig | None,
+) -> BetaCacheControlEphemeralParam | None:
+    if (
+        prompt_cache is None
+        or not prompt_cache.enabled
+        or not prompt_cache.cache_uploaded_files
+    ):
+        return None
+    return _anthropic_beta_cache_control(prompt_cache)
+
+
+def _anthropic_cache_control(
+    prompt_cache: AIPromptCacheConfig,
+) -> CacheControlEphemeralParam:
+    cache_control: CacheControlEphemeralParam = {"type": "ephemeral"}
+    if prompt_cache.ttl != "5m":
+        cache_control["ttl"] = prompt_cache.ttl
+    return cache_control
+
+
+def _anthropic_beta_cache_control(
+    prompt_cache: AIPromptCacheConfig,
+) -> BetaCacheControlEphemeralParam:
+    cache_control: BetaCacheControlEphemeralParam = {"type": "ephemeral"}
+    if prompt_cache.ttl != "5m":
+        cache_control["ttl"] = prompt_cache.ttl
+    return cache_control

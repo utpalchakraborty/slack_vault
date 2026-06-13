@@ -58,6 +58,7 @@ def test_ingest_file_archives_source_and_writes_record(
     assert "Extraction status: completed" in captured.out
     assert "Extractor: plain_text" in captured.out
     assert "Evidence blocks: 1" in captured.out
+    assert "Enhancement status: not_requested" in captured.out
     assert "Created source record: True" in captured.out
     assert len(list(archive_path.glob("sources/*/*/*/original"))) == 1
     record_paths = list((vault_path / "20 Sources/sources").glob("source-*.md"))

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from slack_vault.archive import ArchivedSourceRef
 from slack_vault.config import ArchiveProviderKind
+from slack_vault.enhancement import EnhancedEvidenceBlock, EnhancementResult
 from slack_vault.extraction import (
     EvidenceBlock,
     EvidenceLocation,
@@ -35,6 +36,8 @@ def test_render_source_record_includes_archive_and_origin_metadata() -> None:
     assert "size_bytes: 12" in markdown
     assert "# Example Plan.md" in markdown
     assert "- Uploaded by: local-user" in markdown
+    assert 'enhancement_status: "not_requested"' in markdown
+    assert "AI enhancement has not been requested." in markdown
     assert "Extraction has not run yet." in markdown
 
 
@@ -67,6 +70,59 @@ def test_render_source_record_includes_extracted_evidence() -> None:
     assert "### Evidence 1" in markdown
     assert '- Location: Example Plan.md, heading "Overview"' in markdown
     assert "# Overview\n\nEvidence body." in markdown
+
+
+def test_render_source_record_includes_enhanced_evidence() -> None:
+    ref = _archived_source_ref()
+    location = EvidenceLocation(
+        kind=EvidenceLocationKind.HEADING,
+        file_name="Example Plan.md",
+        heading="Overview",
+    )
+
+    markdown = render_source_record(
+        ref,
+        "source-2026-06-13-abcdef123456",
+        extraction_result=ExtractionResult.completed(
+            extractor_name="markdown",
+            evidence=(
+                EvidenceBlock(
+                    sequence=1,
+                    text="# Overview\n\nEvidence body.",
+                    location=location,
+                ),
+            ),
+        ),
+        enhancement_result=EnhancementResult.completed(
+            enhancer_name="anthropic",
+            enhanced_evidence=(
+                EnhancedEvidenceBlock(
+                    sequence=1,
+                    source_sequence=1,
+                    text="Clean evidence body.",
+                    location=location,
+                ),
+            ),
+            model="claude-test-model",
+            input_tokens=100,
+            output_tokens=20,
+            cache_creation_input_tokens=80,
+            cache_read_input_tokens=40,
+        ),
+    )
+
+    assert 'enhancement_status: "completed"' in markdown
+    assert 'enhancer_name: "anthropic"' in markdown
+    assert "enhanced_evidence_count: 1" in markdown
+    assert 'enhancement_model: "claude-test-model"' in markdown
+    assert "enhancement_input_tokens: 100" in markdown
+    assert "enhancement_cache_read_input_tokens: 40" in markdown
+    assert "## Extracted Evidence" in markdown
+    assert "## Enhanced Evidence" in markdown
+    assert "### Enhanced Evidence 1" in markdown
+    assert "- Source evidence: Evidence 1" in markdown
+    assert '- Location: Example Plan.md, heading "Overview"' in markdown
+    assert "Clean evidence body." in markdown
 
 
 def test_write_source_record_is_idempotent_without_overwrite(tmp_path: Path) -> None:

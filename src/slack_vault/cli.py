@@ -6,7 +6,9 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from slack_vault.ai import AnthropicAIProvider
 from slack_vault.config import Settings
+from slack_vault.enhancement import AnthropicEvidenceEnhancer, EvidenceEnhancer
 from slack_vault.ingest import ingest_local_file
 from slack_vault.vault_bootstrap import bootstrap_vault
 
@@ -43,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rewrite the source record if it already exists.",
     )
+    ingest_parser.add_argument(
+        "--enhance",
+        action="store_true",
+        help="Run optional AI evidence enhancement before writing the source record.",
+    )
 
     return parser
 
@@ -67,17 +74,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "ingest-file":
+        evidence_enhancer: EvidenceEnhancer | None = None
+        if args.enhance:
+            evidence_enhancer = AnthropicEvidenceEnhancer(
+                AnthropicAIProvider.from_settings(settings)
+            )
         ingest_result = ingest_local_file(
             Path(args.path),
             settings,
             uploaded_by=args.uploaded_by,
             overwrite_source_record=args.overwrite_source_record,
+            evidence_enhancer=evidence_enhancer,
         )
         print(f"Source: {ingest_result.source_record.source_id}")
         print(f"Archive URI: {ingest_result.archived_source.uri}")
         print(f"Extraction status: {ingest_result.extraction_result.status.value}")
         print(f"Extractor: {ingest_result.extraction_result.extractor_name}")
         print(f"Evidence blocks: {len(ingest_result.extraction_result.evidence)}")
+        enhancement_status = (
+            "not_requested"
+            if ingest_result.enhancement_result is None
+            else ingest_result.enhancement_result.status.value
+        )
+        print(f"Enhancement status: {enhancement_status}")
+        if ingest_result.enhancement_result is not None:
+            print(
+                "Enhanced evidence blocks: "
+                f"{len(ingest_result.enhancement_result.enhanced_evidence)}"
+            )
         print(f"Source record: {ingest_result.source_record.path}")
         print(f"Created source record: {ingest_result.source_record.created}")
         return 0

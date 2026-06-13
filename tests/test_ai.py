@@ -6,11 +6,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from anthropic.types import Message, MessageParam, ModelParam, TextBlock, Usage
+from anthropic.types import (
+    CacheControlEphemeralParam,
+    Message,
+    MessageParam,
+    ModelParam,
+    TextBlock,
+    TextBlockParam,
+    Usage,
+)
 from anthropic.types.beta import (
+    BetaCacheControlEphemeralParam,
     BetaMessage,
     BetaMessageParam,
     BetaTextBlock,
+    BetaTextBlockParam,
     BetaUsage,
     DeletedFile,
     FileMetadata,
@@ -18,6 +28,7 @@ from anthropic.types.beta import (
 
 from slack_vault.ai import (
     ANTHROPIC_FILES_BETA,
+    AIPromptCacheConfig,
     AITextRequest,
     AIUploadedFile,
     AnthropicAIProvider,
@@ -49,12 +60,56 @@ def test_anthropic_provider_sends_text_request_to_messages_api() -> None:
     assert result.stop_reason == "end_turn"
     assert result.input_tokens == 5
     assert result.output_tokens == 3
+    assert result.cache_creation_input_tokens == 0
+    assert result.cache_read_input_tokens == 0
     assert fake_client.messages.last_max_tokens == 12
     assert fake_client.messages.last_model == "claude-test-model"
     assert fake_client.messages.last_system == "Use terse responses."
+    assert fake_client.messages.last_cache_control is None
     assert fake_client.messages.last_temperature == 0
     assert fake_client.messages.last_messages == (
         {"role": "user", "content": "Say harness OK."},
+    )
+
+
+def test_anthropic_provider_applies_prompt_cache_to_text_request() -> None:
+    response = _anthropic_message(
+        text="Harness OK",
+        model="claude-test-model",
+        cache_creation_input_tokens=1200,
+        cache_read_input_tokens=300,
+    )
+    fake_client = _FakeAnthropicClient(response)
+    prompt_cache = AIPromptCacheConfig(
+        ttl="1h",
+        cache_system_prompt=True,
+    )
+    provider = AnthropicAIProvider(
+        api_key="sk-ant-test-value",
+        model="claude-test-model",
+        max_output_tokens=64,
+        prompt_cache=prompt_cache,
+        client=fake_client,
+    )
+
+    result = provider.complete_text(
+        AITextRequest(
+            system_prompt="Stable enhancement rules.",
+            user_prompt="Enhance this evidence.",
+            max_output_tokens=12,
+        )
+    )
+
+    cache_control = {"type": "ephemeral", "ttl": "1h"}
+    assert result.cache_creation_input_tokens == 1200
+    assert result.cache_read_input_tokens == 300
+    assert fake_client.messages.last_cache_control == cache_control
+    assert fake_client.messages.last_system == (
+        {
+            "type": "text",
+            "text": "Stable enhancement rules.",
+            "cache_control": cache_control,
+        },
     )
 
 
@@ -123,6 +178,7 @@ def test_anthropic_provider_sends_uploaded_files_to_beta_messages() -> None:
     assert result.model == "claude-test-model"
     assert fake_client.beta.messages.last_betas == [ANTHROPIC_FILES_BETA]
     assert fake_client.beta.messages.last_max_tokens == 20
+    assert fake_client.beta.messages.last_cache_control is None
     assert fake_client.beta.messages.last_temperature == 0
     assert fake_client.beta.messages.last_messages == (
         {
@@ -135,6 +191,63 @@ def test_anthropic_provider_sends_uploaded_files_to_beta_messages() -> None:
                         "type": "file",
                         "file_id": "file_test123",
                     },
+                },
+                {"type": "text", "text": "Summarize the uploaded file."},
+            ],
+        },
+    )
+
+
+def test_anthropic_provider_applies_prompt_cache_to_file_request() -> None:
+    fake_client = _FakeAnthropicClient(
+        message_response=_anthropic_message(text="unused", model="claude-test-model"),
+        beta_message_response=_anthropic_beta_message(
+            text="File harness OK",
+            model="claude-test-model",
+            cache_creation_input_tokens=2400,
+            cache_read_input_tokens=600,
+        ),
+    )
+    provider = AnthropicAIProvider(
+        api_key="sk-ant-test-value",
+        model="claude-test-model",
+        max_output_tokens=64,
+        client=fake_client,
+    )
+    uploaded = AIUploadedFile(
+        file_id="file_test123",
+        filename="source.txt",
+        mime_type="text/plain",
+        size_bytes=15,
+        created_at=datetime(2026, 6, 13, 12, 0, tzinfo=UTC),
+    )
+
+    result = provider.complete_text_with_files(
+        AITextRequest(
+            system_prompt="Use uploaded files only.",
+            user_prompt="Summarize the uploaded file.",
+            max_output_tokens=20,
+            prompt_cache=AIPromptCacheConfig(cache_uploaded_files=True),
+        ),
+        files=(uploaded,),
+    )
+
+    cache_control = {"type": "ephemeral"}
+    assert result.cache_creation_input_tokens == 2400
+    assert result.cache_read_input_tokens == 600
+    assert fake_client.beta.messages.last_cache_control == cache_control
+    assert fake_client.beta.messages.last_messages == (
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "title": "source.txt",
+                    "source": {
+                        "type": "file",
+                        "file_id": "file_test123",
+                    },
+                    "cache_control": cache_control,
                 },
                 {"type": "text", "text": "Summarize the uploaded file."},
             ],
@@ -232,7 +345,8 @@ class _FakeMessagesClient:
         self.last_max_tokens: int | None = None
         self.last_messages: tuple[MessageParam, ...] | None = None
         self.last_model: ModelParam | None = None
-        self.last_system: str | None = None
+        self.last_system: str | tuple[TextBlockParam, ...] | None = None
+        self.last_cache_control: CacheControlEphemeralParam | None = None
         self.last_temperature: float | None = None
 
     def create(
@@ -241,13 +355,15 @@ class _FakeMessagesClient:
         max_tokens: int,
         messages: Iterable[MessageParam],
         model: ModelParam,
-        system: str,
+        system: str | Iterable[TextBlockParam],
+        cache_control: CacheControlEphemeralParam | None = None,
         temperature: float | None = None,
     ) -> Message:
         self.last_max_tokens = max_tokens
         self.last_messages = tuple(messages)
         self.last_model = model
-        self.last_system = system
+        self.last_system = tuple(system) if not isinstance(system, str) else system
+        self.last_cache_control = cache_control
         self.last_temperature = temperature
         return self.response
 
@@ -278,8 +394,9 @@ class _FakeBetaMessagesClient:
         self.last_max_tokens: int | None = None
         self.last_messages: tuple[BetaMessageParam, ...] | None = None
         self.last_model: ModelParam | None = None
-        self.last_system: str | None = None
+        self.last_system: str | tuple[BetaTextBlockParam, ...] | None = None
         self.last_betas: list[str] | None = None
+        self.last_cache_control: BetaCacheControlEphemeralParam | None = None
         self.last_temperature: float | None = None
 
     def create(
@@ -288,15 +405,17 @@ class _FakeBetaMessagesClient:
         max_tokens: int,
         messages: Iterable[BetaMessageParam],
         model: ModelParam,
-        system: str,
+        system: str | Iterable[BetaTextBlockParam],
         betas: list[str],
+        cache_control: BetaCacheControlEphemeralParam | None = None,
         temperature: float | None = None,
     ) -> BetaMessage:
         self.last_max_tokens = max_tokens
         self.last_messages = tuple(messages)
         self.last_model = model
-        self.last_system = system
+        self.last_system = tuple(system) if not isinstance(system, str) else system
         self.last_betas = betas
+        self.last_cache_control = cache_control
         self.last_temperature = temperature
         return self.response
 
@@ -339,7 +458,13 @@ class _FakeAnthropicClient:
         )
 
 
-def _anthropic_message(*, text: str, model: str) -> Message:
+def _anthropic_message(
+    *,
+    text: str,
+    model: str,
+    cache_creation_input_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+) -> Message:
     return Message(
         id="msg_test",
         content=[
@@ -352,11 +477,22 @@ def _anthropic_message(*, text: str, model: str) -> Message:
         role="assistant",
         stop_reason="end_turn",
         type="message",
-        usage=Usage(input_tokens=5, output_tokens=3),
+        usage=Usage(
+            input_tokens=5,
+            output_tokens=3,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+        ),
     )
 
 
-def _anthropic_beta_message(*, text: str, model: str) -> BetaMessage:
+def _anthropic_beta_message(
+    *,
+    text: str,
+    model: str,
+    cache_creation_input_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+) -> BetaMessage:
     return BetaMessage(
         id="msg_test",
         content=[
@@ -369,7 +505,12 @@ def _anthropic_beta_message(*, text: str, model: str) -> BetaMessage:
         role="assistant",
         stop_reason="end_turn",
         type="message",
-        usage=BetaUsage(input_tokens=7, output_tokens=4),
+        usage=BetaUsage(
+            input_tokens=7,
+            output_tokens=4,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+        ),
     )
 
 

@@ -47,6 +47,14 @@ sources. Source records include extraction status and source-grounded evidence
 anchors such as headings, PDF pages, Word paragraphs or tables, and spreadsheet
 sheets or cell ranges.
 
+To opt into AI evidence enhancement for a local ingest, set `ENHANCE=1`. This
+uses the configured Anthropic model and API key, preserves the deterministic
+evidence, and writes enhanced evidence into a separate source-record section.
+
+```sh
+make ingest-file FILE=path/to/source.md ENHANCE=1
+```
+
 ## Development Checks
 
 ```sh
@@ -62,6 +70,12 @@ in `.env`:
 
 ```sh
 SLACK_VAULT_RUN_LIVE_AI_TESTS=1 uv run pytest tests/test_ai.py -k live -q --no-cov
+```
+
+To run the live Phase 2b enhancement ingest smoke test:
+
+```sh
+SLACK_VAULT_RUN_LIVE_AI_TESTS=1 uv run pytest tests/test_enhancement.py -k live -q --no-cov
 ```
 
 ## Make Targets

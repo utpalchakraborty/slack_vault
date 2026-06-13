@@ -74,24 +74,45 @@ Status as of 2026-06-13:
 - Phase 0 is complete and pushed.
 - Phase 1 is complete and pushed.
 - Phase 2a deterministic extraction is complete and pushed.
-- Phase 2b groundwork is implemented with `.env` loading,
-  Anthropic text requests, file upload, file-grounded messages, uploaded-file
-  cleanup, mocked unit tests, and an opt-in live smoke test.
-- Latest pushed code repository commit before Phase 2b groundwork:
-  `fdb9b2f Implement deterministic document extraction`.
+- Phase 2b provider groundwork is complete and pushed.
+- Phase 2b prompt caching is implemented in the Anthropic harness:
+  provider/request-level cache configuration, top-level automatic
+  `cache_control`, explicit system/uploaded-file cache breakpoints, and cache
+  read/write usage fields on `AITextResponse`.
+- Phase 2b optional AI evidence enhancement is implemented as an opt-in local
+  ingest path:
+  - `EvidenceEnhancer`, `EnhancementResult`, and `EnhancedEvidenceBlock`
+    models;
+  - `AnthropicEvidenceEnhancer` using the text provider harness;
+  - source-record `enhancement_status` metadata separate from
+    `extraction_status`;
+  - a separate `## Enhanced Evidence` section that preserves links back to the
+    deterministic evidence sequence and source location;
+  - `slack-vault ingest-file --enhance` and
+    `make ingest-file FILE=... ENHANCE=1`.
+- Latest pushed code repository commit before the prompt-caching and
+  enhancement slice: `c4ecb2f Add Anthropic provider groundwork`.
 - Obsidian vault repository commit:
   `8c73576 Initialize Obsidian vault skeleton`.
-- Both commits have been pushed to `origin/main`.
+- Both repositories were pushed to `origin/main` before the prompt-caching and
+  enhancement slice; this status update covers app-repository work after
+  `c4ecb2f`.
 - The code repository is configured with `uv`, `ruff`, `mypy`, `pytest`,
   `pytest-cov`, `pre-commit`, `AGENTS.md`, and split Make targets under
   `makefiles/`.
 - `make check` passes with no external services configured.
+- Opt-in live Anthropic tests are available and passed locally with
+  `SLACK_VAULT_RUN_LIVE_AI_TESTS=1`:
+  - `uv run pytest tests/test_ai.py -k live -q --no-cov`;
+  - `uv run pytest tests/test_enhancement.py -k live -q --no-cov`.
 - The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
   app state ignored.
 
-Next implementation phase after Phase 2a review: Phase 2b optional AI evidence
-enhancement, or Phase 3 classification and synthesis if no enhancement cases
-need to block the local loop.
+Next implementation phase: Phase 3 classification, taxonomy selection, note
+matching, and knowledge-note synthesis. Phase 2b can be extended later with
+file-grounded enhancement for large or complex originals, richer table
+interpretation prompts, and per-block enhancement policy, but those are not
+required to start Phase 3.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -288,6 +309,13 @@ may need it.
 
 - `AITextProvider` and `AIFileProvider` interfaces plus Anthropic implementation
   for enhancement prompts and original-file inspection.
+- Prompt caching support in the provider request/response model before serious
+  enhancement prompt work:
+  - opt-in automatic caching with top-level `cache_control`;
+  - explicit cache breakpoints on stable system/document content where needed;
+  - cache usage fields such as `cache_creation_input_tokens` and
+    `cache_read_input_tokens`;
+  - tests proving cache parameters are sent and cache usage is captured.
 - `EvidenceEnhancer` interface that accepts deterministic evidence and returns
   enhanced evidence while preserving source anchors.
 - Enhancement status updates in source records, separate from extraction status.
@@ -300,9 +328,10 @@ may need it.
 - Opt-in live Anthropic smoke test gated by `SLACK_VAULT_RUN_LIVE_AI_TESTS=1`,
   including file upload, file-grounded message, and file cleanup.
 
-#### Groundwork Implemented
+#### Implementation Notes
 
-Phase 2b provider groundwork is implemented as a foundation slice.
+Phase 2b is implemented in two layers: provider harness groundwork and opt-in
+AI evidence enhancement.
 
 - `src/slack_vault/config.py` loads `.env` from the current working directory for
   default CLI/settings usage. Real environment variables override matching
@@ -320,17 +349,66 @@ Phase 2b provider groundwork is implemented as a foundation slice.
   - file-grounded beta Messages requests using uploaded `file_id` document
     blocks;
   - uploaded-file deletion through `client.beta.files.delete`.
+- Prompt caching is optional and request/provider scoped:
+  - `AIPromptCacheConfig` controls TTL, automatic top-level caching, system
+    prompt breakpoints, and uploaded-file breakpoints;
+  - text requests pass Anthropic `cache_control` when caching is enabled;
+  - file-grounded beta requests can cache uploaded document blocks;
+  - `AITextResponse` captures `cache_creation_input_tokens` and
+    `cache_read_input_tokens`.
+- `src/slack_vault/enhancement.py` defines the Phase 2b enhancement surface:
+  - `EvidenceEnhancer` protocol;
+  - `EnhancementStatus`;
+  - `EnhancementResult`;
+  - `EnhancedEvidenceBlock`;
+  - `AnthropicEvidenceEnhancer`.
+- `AnthropicEvidenceEnhancer` accepts deterministic `ExtractionResult` values,
+  skips failed or empty extraction results, prompts Anthropic for JSON with
+  `enhanced_text`, records invalid AI responses as failed enhancement results,
+  and preserves each block's deterministic source sequence and location.
+- `src/slack_vault/source_registry.py` writes enhancement metadata to
+  frontmatter and renders enhanced evidence separately from extracted evidence.
+- `src/slack_vault/ingest.py` accepts an optional `EvidenceEnhancer`. When it is
+  absent, deterministic ingest still works and source records show
+  `enhancement_status: "not_requested"`.
+- `slack-vault ingest-file --enhance` and
+  `make ingest-file FILE=path/to/source.md ENHANCE=1` opt into live Anthropic
+  enhancement for local ingest.
 - `tests/test_ai.py` covers the Anthropic harness with mocked text, upload,
-  file-grounded message, and delete paths.
+  file-grounded message, prompt caching, and delete paths.
+- `tests/test_enhancement.py` covers mocked enhancement parsing, source-anchor
+  preservation, skipped extraction, invalid AI responses, and an opt-in live
+  enhancement ingest smoke test.
+- `tests/test_ingest.py`, `tests/test_source_registry.py`, and
+  `tests/test_cli.py` cover optional enhancement wiring and source-record output.
 - The live Anthropic smoke test uses the key from `.env`, verifies text
   completion, uploads a tiny temporary file, asks a file-grounded question, and
   deletes the uploaded file.
+- The live Phase 2b enhancement smoke test creates a temporary Markdown source,
+  runs archive, deterministic extraction, Anthropic enhancement, and source
+  record writing, then verifies both extracted and enhanced evidence are present.
 
 Validation:
 
-- `make check` passes with 35 tests, one skipped live test, and 91.15% coverage.
+- `make check` passes with 42 tests, two skipped live tests, and 90.57%
+  coverage.
 - `SLACK_VAULT_RUN_LIVE_AI_TESTS=1 uv run pytest tests/test_ai.py -k live -q --no-cov`
   passes with one live test.
+- `SLACK_VAULT_RUN_LIVE_AI_TESTS=1 uv run pytest tests/test_enhancement.py -k live -q --no-cov`
+  passes with one live test.
+
+#### Restart Context
+
+- Normal local ingest remains deterministic and offline:
+  `make ingest-file FILE=path/to/source.md`.
+- AI-enhanced ingest is explicit and uses the configured Anthropic API key:
+  `make ingest-file FILE=path/to/source.md ENHANCE=1`.
+- Source records now always include enhancement status. Without enhancement,
+  status is `not_requested`; with successful enhancement, status is `completed`.
+- Phase 2b failures should not block Phase 2a extraction. Enhancement failures
+  are recorded separately from extraction failures.
+- Classification, taxonomy selection, note matching, knowledge-note writing,
+  retrieval, and Slack Q&A are still future work.
 
 #### Acceptance Criteria
 

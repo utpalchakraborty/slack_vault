@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from slack_vault.archive import ArchivedSourceRef, format_datetime
+from slack_vault.enhancement import EnhancementResult
 from slack_vault.extraction import ExtractionResult
 
 SOURCE_RECORDS_DIRECTORY = Path("20 Sources/sources")
 EVIDENCE_FENCE = "````"
+ENHANCEMENT_NOT_REQUESTED = "not_requested"
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ def write_source_record(
     ref: ArchivedSourceRef,
     *,
     extraction_result: ExtractionResult | None = None,
+    enhancement_result: EnhancementResult | None = None,
     overwrite: bool = False,
 ) -> SourceRecordWriteResult:
     """Write a Markdown source record into the Obsidian vault."""
@@ -53,7 +56,12 @@ def write_source_record(
         )
 
     target_path.write_text(
-        render_source_record(ref, source_id, extraction_result=extraction_result),
+        render_source_record(
+            ref,
+            source_id,
+            extraction_result=extraction_result,
+            enhancement_result=enhancement_result,
+        ),
         encoding="utf-8",
     )
     return SourceRecordWriteResult(source_id=source_id, path=target_path, created=True)
@@ -64,11 +72,17 @@ def render_source_record(
     source_id: str,
     *,
     extraction_result: ExtractionResult | None = None,
+    enhancement_result: EnhancementResult | None = None,
 ) -> str:
     """Render an archived source reference as Markdown."""
 
     extraction_status = (
         "pending" if extraction_result is None else extraction_result.status.value
+    )
+    enhancement_status = (
+        ENHANCEMENT_NOT_REQUESTED
+        if enhancement_result is None
+        else enhancement_result.status.value
     )
     frontmatter = _frontmatter(
         {
@@ -94,6 +108,31 @@ def render_source_record(
             "extraction_error": None
             if extraction_result is None
             else extraction_result.error_message,
+            "enhancement_status": enhancement_status,
+            "enhancer_name": None
+            if enhancement_result is None
+            else enhancement_result.enhancer_name,
+            "enhanced_evidence_count": None
+            if enhancement_result is None
+            else len(enhancement_result.enhanced_evidence),
+            "enhancement_error": None
+            if enhancement_result is None
+            else enhancement_result.error_message,
+            "enhancement_model": None
+            if enhancement_result is None
+            else enhancement_result.model,
+            "enhancement_input_tokens": None
+            if enhancement_result is None
+            else enhancement_result.input_tokens,
+            "enhancement_output_tokens": None
+            if enhancement_result is None
+            else enhancement_result.output_tokens,
+            "enhancement_cache_creation_input_tokens": None
+            if enhancement_result is None
+            else enhancement_result.cache_creation_input_tokens,
+            "enhancement_cache_read_input_tokens": None
+            if enhancement_result is None
+            else enhancement_result.cache_read_input_tokens,
             "uploaded_by": ref.uploaded_by,
             "slack_workspace_id": ref.slack_workspace_id,
             "slack_channel_id": ref.slack_channel_id,
@@ -139,6 +178,10 @@ def render_source_record(
             "",
             *_render_extracted_evidence(extraction_result),
             "",
+            "## Enhanced Evidence",
+            "",
+            *_render_enhanced_evidence(enhancement_result),
+            "",
         ]
     )
 
@@ -179,6 +222,41 @@ def _render_extracted_evidence(
                 f"- Location: {block.location.label()}",
                 "",
                 f"{EVIDENCE_FENCE}text",
+                block.text,
+                EVIDENCE_FENCE,
+            ]
+        )
+    return lines
+
+
+def _render_enhanced_evidence(
+    enhancement_result: EnhancementResult | None,
+) -> list[str]:
+    if enhancement_result is None:
+        return ["AI enhancement has not been requested."]
+
+    lines = [
+        f"- Status: {enhancement_result.status.value}",
+        f"- Enhancer: {enhancement_result.enhancer_name}",
+        f"- Enhanced evidence blocks: {len(enhancement_result.enhanced_evidence)}",
+    ]
+    if enhancement_result.model is not None:
+        lines.append(f"- Model: {enhancement_result.model}")
+    if enhancement_result.error_message is not None:
+        lines.append(f"- Error: {enhancement_result.error_message}")
+    if not enhancement_result.enhanced_evidence:
+        return lines
+
+    for block in enhancement_result.enhanced_evidence:
+        lines.extend(
+            [
+                "",
+                f"### Enhanced Evidence {block.sequence}",
+                "",
+                f"- Source evidence: Evidence {block.source_sequence}",
+                f"- Location: {block.location.label()}",
+                "",
+                f"{EVIDENCE_FENCE}markdown",
                 block.text,
                 EVIDENCE_FENCE,
             ]

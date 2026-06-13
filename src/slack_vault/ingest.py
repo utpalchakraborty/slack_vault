@@ -12,6 +12,7 @@ from slack_vault.archive import (
     SourceIngestMetadata,
 )
 from slack_vault.config import ArchiveProviderKind, Settings
+from slack_vault.enhancement import EnhancementResult, EvidenceEnhancer
 from slack_vault.extraction import ExtractionResult, extract_document
 from slack_vault.source_registry import SourceRecordWriteResult, write_source_record
 
@@ -22,6 +23,7 @@ class LocalFileIngestResult:
 
     archived_source: ArchivedSourceRef
     extraction_result: ExtractionResult
+    enhancement_result: EnhancementResult | None
     source_record: SourceRecordWriteResult
 
 
@@ -31,6 +33,7 @@ def ingest_local_file(
     *,
     uploaded_by: str | None = None,
     overwrite_source_record: bool = False,
+    evidence_enhancer: EvidenceEnhancer | None = None,
     now: datetime | None = None,
 ) -> LocalFileIngestResult:
     """Archive a local file, extract evidence, and write its source record."""
@@ -52,14 +55,21 @@ def ingest_local_file(
         archived_source,
         provider.get_source_path(archived_source),
     )
+    enhancement_result = (
+        None
+        if evidence_enhancer is None
+        else evidence_enhancer.enhance(archived_source, extraction_result)
+    )
     source_record = write_source_record(
         settings.obsidian_vault_path,
         archived_source,
         extraction_result=extraction_result,
+        enhancement_result=enhancement_result,
         overwrite=overwrite_source_record,
     )
     return LocalFileIngestResult(
         archived_source=archived_source,
         extraction_result=extraction_result,
+        enhancement_result=enhancement_result,
         source_record=source_record,
     )

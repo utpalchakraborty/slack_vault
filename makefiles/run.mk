@@ -15,4 +15,4 @@ ingest-file:
 ifndef FILE
 	$(error FILE is required. Usage: make ingest-file FILE=path/to/source)
 endif
-	$(UV_RUN) slack-vault ingest-file "$(FILE)" $(if $(UPLOADED_BY),--uploaded-by "$(UPLOADED_BY)")
+	$(UV_RUN) slack-vault ingest-file "$(FILE)" $(if $(UPLOADED_BY),--uploaded-by "$(UPLOADED_BY)") $(if $(ENHANCE),--enhance)
