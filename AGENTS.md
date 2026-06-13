@@ -19,6 +19,8 @@
   - `make dev` installs dependencies and pre-commit hooks.
   - `make check` runs formatting checks, linting, mypy, and tests.
   - `make init-vault` initializes the configured Obsidian vault path.
+  - `make ingest-file FILE=...` archives a local file and writes a source
+    record.
 - Keep implementation changes scoped to `src/slack_vault/` and matching tests
   under `tests/`.
 - Keep docs aligned with code when changing configuration, commands, or repo

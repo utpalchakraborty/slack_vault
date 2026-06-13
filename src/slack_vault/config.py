@@ -24,7 +24,7 @@ class AIProvider(StrEnum):
     OPENAI = "openai"
 
 
-class ArchiveProvider(StrEnum):
+class ArchiveProviderKind(StrEnum):
     """Supported archive provider identifiers."""
 
     LOCAL = "local"
@@ -58,7 +58,7 @@ class Settings:
 
     environment: str
     obsidian_vault_path: Path
-    archive_provider: ArchiveProvider
+    archive_provider: ArchiveProviderKind
     archive_path: str
     slack: SlackSettings
     ai: AISettings
@@ -75,8 +75,8 @@ class Settings:
                 "SLACK_VAULT_OBSIDIAN_PATH",
                 DEFAULT_OBSIDIAN_VAULT_PATH,
             ),
-            archive_provider=ArchiveProvider(
-                values.get("SLACK_VAULT_ARCHIVE_PROVIDER", ArchiveProvider.LOCAL)
+            archive_provider=ArchiveProviderKind(
+                values.get("SLACK_VAULT_ARCHIVE_PROVIDER", ArchiveProviderKind.LOCAL)
             ),
             archive_path=_string_value(
                 values,

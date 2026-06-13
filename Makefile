@@ -1,7 +1,9 @@
 .DEFAULT_GOAL := help
 
 UV ?= uv
-UV_RUN := $(UV) run
+UV_CACHE_DIR ?= .data/uv-cache
+UV_RUN := UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) run
+UV_SYNC := UV_CACHE_DIR=$(UV_CACHE_DIR) $(UV) sync
 PYTHON_SOURCES := src tests
 
 include makefiles/dev.mk
@@ -18,3 +20,4 @@ help:
 	@printf "  make show-config          Print resolved app settings\n"
 	@printf "  make init-vault           Initialize configured Obsidian vault\n"
 	@printf "  make init-vault-overwrite Rewrite starter vault files\n"
+	@printf "  make ingest-file FILE=... Archive a local file and write a source record\n"

@@ -8,7 +8,7 @@ from slack_vault.config import (
     ANTHROPIC_HAIKU_45_MAX_OUTPUT_TOKENS,
     ANTHROPIC_HAIKU_45_MODEL,
     AIProvider,
-    ArchiveProvider,
+    ArchiveProviderKind,
     Settings,
 )
 
@@ -18,7 +18,7 @@ def test_settings_default_to_local_slack_obsidian_and_anthropic() -> None:
 
     assert settings.environment == "local"
     assert settings.obsidian_vault_path == Path("/Users/utpalrohan/code/slack_obsidian")
-    assert settings.archive_provider is ArchiveProvider.LOCAL
+    assert settings.archive_provider is ArchiveProviderKind.LOCAL
     assert settings.archive_path == ".data/archive"
     assert settings.ai.provider is AIProvider.ANTHROPIC
     assert settings.ai.model == ANTHROPIC_HAIKU_45_MODEL
@@ -47,7 +47,7 @@ def test_settings_read_environment_values() -> None:
 
     assert settings.environment == "shared"
     assert settings.obsidian_vault_path == Path("~/vault").expanduser()
-    assert settings.archive_provider is ArchiveProvider.GCS
+    assert settings.archive_provider is ArchiveProviderKind.GCS
     assert settings.archive_path == "gs://example/archive"
     assert settings.slack.bot_token == "xoxb-abc"
     assert settings.slack.app_token == "xapp-def"

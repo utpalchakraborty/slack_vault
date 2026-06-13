@@ -20,6 +20,9 @@ def test_bootstrap_vault_creates_starter_structure(tmp_path: Path) -> None:
 
     assert result.vault_path == tmp_path
     assert tmp_path / "90 System/ingestion-guidelines.md" in result.created_paths
+    assert (tmp_path / ".gitignore").read_text(
+        encoding="utf-8"
+    ) == ".obsidian/\n.trash/\n"
 
 
 def test_bootstrap_vault_does_not_overwrite_existing_files(tmp_path: Path) -> None:

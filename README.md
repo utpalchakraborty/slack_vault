@@ -36,6 +36,12 @@ To inspect resolved settings:
 make show-config
 ```
 
+To archive a local file and create a source record in the configured vault:
+
+```sh
+make ingest-file FILE=path/to/source.md
+```
+
 ## Development Checks
 
 ```sh

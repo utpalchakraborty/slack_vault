@@ -3,7 +3,7 @@
 dev: install pre-commit-install
 
 install:
-	$(UV) sync --dev
+	$(UV_SYNC) --dev
 
 pre-commit-install:
 	$(UV_RUN) pre-commit install

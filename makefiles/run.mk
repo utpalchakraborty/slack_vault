@@ -1,4 +1,4 @@
-.PHONY: init-vault init-vault-overwrite run show-config
+.PHONY: ingest-file init-vault init-vault-overwrite run show-config
 
 run: show-config
 
@@ -10,3 +10,9 @@ init-vault:
 
 init-vault-overwrite:
 	$(UV_RUN) slack-vault init-vault --overwrite
+
+ingest-file:
+ifndef FILE
+	$(error FILE is required. Usage: make ingest-file FILE=path/to/source)
+endif
+	$(UV_RUN) slack-vault ingest-file "$(FILE)" $(if $(UPLOADED_BY),--uploaded-by "$(UPLOADED_BY)")

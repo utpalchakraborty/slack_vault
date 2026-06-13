@@ -68,7 +68,8 @@ These choices are defaults for the POC and can be revised before coding.
 
 Status as of 2026-06-13:
 
-- Phase 0 is complete.
+- Phase 0 is complete and pushed.
+- Phase 1 is implemented in the working tree and ready for review.
 - Code repository commit:
   `f194084 Scaffold Slack Vault Phase 0`.
 - Obsidian vault repository commit:
@@ -81,7 +82,7 @@ Status as of 2026-06-13:
 - The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
   app state ignored.
 
-Next implementation phase: Phase 1, archive and source registry core.
+Next implementation phase after Phase 1 review: Phase 2, document extraction.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -164,6 +165,28 @@ does not require Slack or AI.
 - Re-ingesting the same file is idempotent or clearly marked as a duplicate.
 - Unit tests cover source ID generation, content hashing, archive writes, and
   source record rendering.
+
+### Implementation Notes
+
+Phase 1 is implemented without Slack or AI dependencies.
+
+- `src/slack_vault/archive.py` defines the archive interface, source ingest
+  metadata, archived source reference model, SHA-256 hashing, MIME detection,
+  and local filesystem archive provider.
+- `src/slack_vault/source_registry.py` generates source IDs, renders source
+  record Markdown, and writes source records under
+  `20 Sources/sources/`.
+- `src/slack_vault/ingest.py` coordinates local file ingestion from archive
+  write through source record creation.
+- `slack-vault ingest-file` and `make ingest-file FILE=...` provide the local
+  CLI path.
+- Local archive idempotency is content-hash based, so re-ingesting the same
+  file reuses the existing archived source metadata.
+
+Validation:
+
+- `make check` passes with 17 tests and 94.09% coverage.
+- `make -n ingest-file FILE=README.md` confirms the Make wrapper command.
 
 ## 6. Phase 2: Document Extraction
 

@@ -131,8 +131,7 @@ type: system_guidance
 - Preserve human-authored edits when updating existing notes.
 - Keep Markdown readable in Obsidian without custom plugins.
 """,
-    ".gitignore": """.obsidian/workspace.json
-.obsidian/workspace-mobile.json
+    ".gitignore": """.obsidian/
 .trash/
 """,
 }
