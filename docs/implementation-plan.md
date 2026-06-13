@@ -32,7 +32,7 @@ The proof of concept is successful when a user can:
 
 These choices are defaults for the POC and can be revised before coding.
 
-- Language: Python.
+- Language: Python 3.13.
 - Project tooling: `uv`, `ruff`, `mypy`, `pytest`, `pytest-cov`, and
   `pre-commit`.
 - Slack integration: Slack Bolt for Python.
@@ -63,6 +63,25 @@ These choices are defaults for the POC and can be revised before coding.
   `anthropic`.
 - Anthropic credentials are read from `ANTHROPIC_API_KEY`.
 - Haiku 4.5 is configured through `SLACK_VAULT_ANTHROPIC_MODEL`.
+
+## 3.2 Current Progress
+
+Status as of 2026-06-13:
+
+- Phase 0 is complete.
+- Code repository commit:
+  `f194084 Scaffold Slack Vault Phase 0`.
+- Obsidian vault repository commit:
+  `8c73576 Initialize Obsidian vault skeleton`.
+- Both commits have been pushed to `origin/main`.
+- The code repository is configured with `uv`, `ruff`, `mypy`, `pytest`,
+  `pytest-cov`, `pre-commit`, `AGENTS.md`, and split Make targets under
+  `makefiles/`.
+- `make check` passes with no external services configured.
+- The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
+  app state ignored.
+
+Next implementation phase: Phase 1, archive and source registry core.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -99,6 +118,23 @@ layout without implementing ingestion logic yet.
 - A user can open `vault/` in Obsidian.
 - The vault has a clear starter structure.
 - The project can run tests with no external services configured.
+
+### Completion Notes
+
+Phase 0 is implemented across two repositories:
+
+- `/Users/utpalrohan/code/slack_vault` contains the Python application scaffold,
+  settings model, CLI, vault bootstrapper, tests, pre-commit configuration,
+  Make targets, and contributor/agent guidance.
+- `/Users/utpalrohan/code/slack_obsidian` contains the starter Obsidian vault
+  directories, source index, map indexes, system guidance files, and Git
+  placeholders for empty starter folders.
+
+Validation completed before moving to Phase 1:
+
+- `make check` in the code repository.
+- Manual open of `/Users/utpalrohan/code/slack_obsidian` in Obsidian.
+- Git push of both repositories to `origin/main`.
 
 ## 5. Phase 1: Archive And Source Registry Core
 
@@ -367,12 +403,13 @@ production too early.
 - Large-scale vector indexing and re-ranking.
 - Continuous ingestion from arbitrary Slack channels.
 
-## 15. Immediate Next Decisions Before Coding
+## 15. Resolved And Remaining Early Decisions
 
-These are useful to decide before Phase 0 starts, but none require redesigning
-the architecture.
+These decisions guide the early implementation phases. Resolved items should
+remain documented so future implementation work does not reopen settled Phase 0
+choices without a specific reason.
 
-- Confirm Python as the POC implementation language. Decision: Python.
+- Confirm Python as the POC implementation language. Decision: Python 3.13.
 - Choose first AI provider for implementation: OpenAI or Anthropic. Decision:
   Anthropic.
 - Decide whether to initialize this repository as the Git-backed vault repo or
@@ -380,5 +417,6 @@ the architecture.
   repositories; the Obsidian vault repo is
   `/Users/utpalrohan/code/slack_obsidian`.
 - Decide whether the first Slack POC uses Socket Mode or a public HTTP endpoint.
+  Status: unresolved; not needed for Phase 1.
 - Decide whether vector retrieval is required in the POC or can follow the first
-  lexical Q&A loop.
+  lexical Q&A loop. Status: unresolved; not needed for Phase 1.

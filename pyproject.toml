@@ -3,10 +3,10 @@ name = "slack-vault"
 version = "0.1.0"
 description = "Slack ingestion and Q&A tooling for a Git-backed Obsidian knowledge vault."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
-    "anthropic>=0.40",
-    "slack-bolt>=1.22",
+    "anthropic>=0.109.1",
+    "slack-bolt>=1.28.0",
 ]
 
 [project.scripts]
@@ -44,13 +44,13 @@ skip_covered = true
 
 [tool.ruff]
 line-length = 88
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
