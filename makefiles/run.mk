@@ -1,4 +1,4 @@
-.PHONY: ingest-file init-vault init-vault-overwrite run show-config
+.PHONY: ask ingest-file init-vault init-vault-overwrite run show-config
 
 run: show-config
 
@@ -16,3 +16,9 @@ ifndef FILE
 	$(error FILE is required. Usage: make ingest-file FILE=path/to/source)
 endif
 	$(UV_RUN) slack-vault ingest-file "$(FILE)" $(if $(UPLOADED_BY),--uploaded-by "$(UPLOADED_BY)") $(if $(ENHANCE),--enhance) $(if $(SYNTHESIZE),--synthesize) $(if $(NO_GIT_COMMIT),--no-git-commit)
+
+ask:
+ifndef QUESTION
+	$(error QUESTION is required. Usage: make ask QUESTION="question")
+endif
+	$(UV_RUN) slack-vault ask "$(QUESTION)" $(if $(LIMIT),--limit "$(LIMIT)")

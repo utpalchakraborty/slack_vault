@@ -14,6 +14,16 @@ from slack_vault.enhancement import AnthropicEvidenceEnhancer, EvidenceEnhancer
 from slack_vault.git_vault import GitVaultCommitter
 from slack_vault.ingest import IngestProcessingError, ingest_local_file
 from slack_vault.log_setup import configure_logging
+from slack_vault.qa import (
+    AnswerResult,
+    AnthropicQuestionAnswerer,
+    render_answer_result,
+)
+from slack_vault.retrieval import (
+    ObsidianCliSearch,
+    build_answer_context,
+    load_vault_index,
+)
 from slack_vault.synthesis import AnthropicKnowledgeSynthesizer, KnowledgeSynthesizer
 from slack_vault.vault_bootstrap import bootstrap_vault
 
@@ -76,6 +86,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-git-commit",
         action="store_true",
         help="Write vault files without committing them to the vault Git repository.",
+    )
+
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Answer a local question against the configured Obsidian vault.",
+    )
+    ask_parser.add_argument("question", help="Question to answer from vault notes.")
+    ask_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Maximum number of retrieved knowledge notes to use.",
     )
 
     return parser
@@ -196,6 +218,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         print(f"Source record: {ingest_result.source_record.path}")
         print(f"Created source record: {ingest_result.source_record.created}")
+        return 0
+
+    if args.command == "ask":
+        vault_name = (
+            settings.obsidian_cli_vault_name or settings.obsidian_vault_path.name
+        )
+        context = build_answer_context(
+            load_vault_index(settings.obsidian_vault_path),
+            args.question,
+            search_provider=ObsidianCliSearch(vault_name=vault_name),
+            limit=args.limit,
+        )
+        if context.items:
+            ai_provider = RetryingAITextProvider(
+                AnthropicAIProvider.from_settings(settings),
+                retry=settings.ai.retry,
+            )
+            result = AnthropicQuestionAnswerer(ai_provider).answer(context)
+        else:
+            result = AnswerResult.no_evidence_result(context)
+        print(render_answer_result(result))
         return 0
 
     raise ValueError(f"Unsupported command: {args.command}")

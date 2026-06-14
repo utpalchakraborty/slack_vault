@@ -90,6 +90,23 @@ Enhancement and synthesis can be combined when useful:
 make ingest-file FILE=path/to/source.md ENHANCE=1 SYNTHESIZE=1
 ```
 
+To ask a local question against generated vault notes:
+
+```sh
+make ask QUESTION="What does the vault say about the operating model?"
+```
+
+Answers use Obsidian CLI search over the configured vault, then ask the
+configured Anthropic model to synthesize only from the returned vault search
+hits. Output includes Markdown-style citations back to vault notes and source
+records. If no relevant context is found, the command returns a deterministic
+no-evidence answer without calling the AI provider.
+
+The Obsidian desktop app must be running and its CLI must be registered on
+`PATH`. Enable it in Obsidian Settings > General > Command line interface. The
+CLI vault name defaults to the configured vault directory name and can be
+overridden with `SLACK_VAULT_OBSIDIAN_CLI_VAULT`.
+
 AI-backed ingest retries transient provider failures, including Anthropic rate
 limits, before failing the ingest. If requested enhancement or synthesis still
 fails, the command exits non-zero before writing a vault source record or

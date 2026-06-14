@@ -98,6 +98,7 @@ class Settings:
 
     environment: str
     obsidian_vault_path: Path
+    obsidian_cli_vault_name: str | None
     archive_provider: ArchiveProviderKind
     archive_path: str
     slack: SlackSettings
@@ -125,6 +126,9 @@ class Settings:
                 values,
                 "SLACK_VAULT_OBSIDIAN_PATH",
                 DEFAULT_OBSIDIAN_VAULT_PATH,
+            ),
+            obsidian_cli_vault_name=_blank_to_none(
+                values.get("SLACK_VAULT_OBSIDIAN_CLI_VAULT")
             ),
             archive_provider=ArchiveProviderKind(
                 values.get("SLACK_VAULT_ARCHIVE_PROVIDER", ArchiveProviderKind.LOCAL)
@@ -212,6 +216,7 @@ class Settings:
         data = {
             "environment": self.environment,
             "obsidian_vault_path": str(self.obsidian_vault_path),
+            "obsidian_cli_vault_name": self.obsidian_cli_vault_name,
             "archive_provider": self.archive_provider.value,
             "archive_path": self.archive_path,
             "slack": {

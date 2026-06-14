@@ -25,6 +25,7 @@ from slack_vault.config import (
 CONFIG_ENV_KEYS = (
     "SLACK_VAULT_ENV",
     "SLACK_VAULT_OBSIDIAN_PATH",
+    "SLACK_VAULT_OBSIDIAN_CLI_VAULT",
     "SLACK_VAULT_ARCHIVE_PROVIDER",
     "SLACK_VAULT_ARCHIVE_PATH",
     "SLACK_BOT_TOKEN",
@@ -52,6 +53,7 @@ def test_settings_default_to_local_slack_obsidian_and_anthropic() -> None:
 
     assert settings.environment == "local"
     assert settings.obsidian_vault_path == Path("/Users/utpalrohan/code/slack_obsidian")
+    assert settings.obsidian_cli_vault_name is None
     assert settings.archive_provider is ArchiveProviderKind.LOCAL
     assert settings.archive_path == ".data/archive"
     assert settings.ai.provider is AIProvider.ANTHROPIC
@@ -79,6 +81,7 @@ def test_settings_read_environment_values() -> None:
         {
             "SLACK_VAULT_ENV": "shared",
             "SLACK_VAULT_OBSIDIAN_PATH": "~/vault",
+            "SLACK_VAULT_OBSIDIAN_CLI_VAULT": "Team Vault",
             "SLACK_VAULT_ARCHIVE_PROVIDER": "gcs",
             "SLACK_VAULT_ARCHIVE_PATH": "gs://example/archive",
             "SLACK_BOT_TOKEN": "xoxb-abc",
@@ -103,6 +106,7 @@ def test_settings_read_environment_values() -> None:
 
     assert settings.environment == "shared"
     assert settings.obsidian_vault_path == Path("~/vault").expanduser()
+    assert settings.obsidian_cli_vault_name == "Team Vault"
     assert settings.archive_provider is ArchiveProviderKind.GCS
     assert settings.archive_path == "gs://example/archive"
     assert settings.slack.bot_token == "xoxb-abc"
@@ -193,4 +197,5 @@ def test_settings_json_redacts_secrets() -> None:
     assert payload["ai"]["retry"]["max_attempts"] == 3
     assert payload["logging"]["path"] == ".data/logs/slack-vault.log"
     assert payload["logging"]["level"] == "INFO"
+    assert payload["obsidian_cli_vault_name"] is None
     assert payload["ingestion"]["automatic_ingest_delay_seconds"] == 75.0

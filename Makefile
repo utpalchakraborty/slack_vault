@@ -22,3 +22,4 @@ help:
 	@printf "  make init-vault           Initialize configured Obsidian vault\n"
 	@printf "  make init-vault-overwrite Rewrite starter vault files\n"
 	@printf "  make ingest-file FILE=... Archive, extract, write records, and commit vault\n"
+	@printf "  make ask QUESTION=...     Answer from generated vault notes\n"

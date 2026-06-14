@@ -50,7 +50,7 @@ These choices are defaults for the POC and can be revised before coding.
   - Markdown, plain text, PDF, Word, and Excel first;
   - images after the basic loop is working.
 - Retrieval:
-  - lexical Markdown/frontmatter search first;
+  - Obsidian CLI search over vault Markdown first;
   - vector retrieval after the Q&A path is functional.
 
 ## 3.1 Current Local Environment Decisions
@@ -136,21 +136,49 @@ Status as of 2026-06-13:
   - `slack-vault ingest-file --no-git-commit` and
     `make ingest-file FILE=... NO_GIT_COMMIT=1` keep local development runs from
     committing.
+- Phase 4 was live-smoke-tested with two real DOCX files in local archive mode:
+  - `BIZEE Product-Centralized Operating Model.docx` produced source
+    `source-2026-06-13-a0a9730a88b0`, a knowledge note, and vault commit
+    `a66be4e Ingest source-2026-06-13-a0a9730a88b0`;
+  - `Hubspot - Current State.docx` produced source
+    `source-2026-06-13-b7b566e4c0e9`, a knowledge note, and vault commit
+    `c9a1898 Ingest source-2026-06-13-b7b566e4c0e9`;
+  - both vault commits were pushed to the Obsidian vault repository.
+- Phase 5 Local Retrieval and Q&A is implemented as a local-only slice:
+  - `src/slack_vault/retrieval.py` loads generated knowledge notes and source
+    records from the configured vault, including frontmatter, Markdown body,
+    source IDs, relative paths, and source-record provenance;
+  - Obsidian CLI search (`obsidian search ... format=json`) supplies the vault
+    hit paths, so search semantics stay anchored in Obsidian rather than an
+    app-owned index;
+  - citation-aware answer context includes note paths, note titles, source IDs,
+    source-record paths, matched terms, scores, and excerpts used for answers;
+  - `src/slack_vault/qa.py` defines the answer prompt contract, Anthropic-backed
+    answer generation, strict JSON parsing, Markdown-style citation rendering,
+    and deterministic no-evidence responses when retrieval finds no useful
+    context;
+  - `slack-vault ask "question"` and `make ask QUESTION="question"` provide the
+    local Q&A entrypoint.
+- The Obsidian CLI vault name can be overridden with
+  `SLACK_VAULT_OBSIDIAN_CLI_VAULT`; otherwise the configured vault directory
+  name is used.
+- Phase 5 was smoke-tested against the current DOCX-derived vault notes:
+  `Hubspot - Current State.docx` answered with a cited knowledge note and source
+  record for `source-2026-06-13-b7b566e4c0e9`.
 - Local POC reset tooling is available for repeated smoke-test loops:
   `slack-vault clean-poc-data --yes` and `make clean-poc-data` remove generated
   knowledge notes, generated source records, and the local archive path while
   leaving input files such as sample DOCX documents in place.
-- Latest pushed code repository commit before the prompt-caching and
-  enhancement slice: `c4ecb2f Add Anthropic provider groundwork`.
-- Obsidian vault repository commit:
-  `8c73576 Initialize Obsidian vault skeleton`.
-- Both repositories were pushed to `origin/main` before the prompt-caching and
-  enhancement slice; this status update covers app-repository work after
-  `c4ecb2f`.
+- Latest pushed code repository commit:
+  `9bed310 Implement synthesis and vault git integration`.
+- Latest pushed Obsidian vault repository commit:
+  `c9a1898 Ingest source-2026-06-13-b7b566e4c0e9`.
+- Both repositories are clean and tracking `origin/main`.
 - The code repository is configured with `uv`, `ruff`, `mypy`, `pytest`,
   `pytest-cov`, `pre-commit`, `AGENTS.md`, and split Make targets under
   `makefiles/`.
-- `make check` passes with no external services configured.
+- `make check` passes with no external services configured:
+  `111 passed, 2 skipped`, total coverage `90.90%`.
 - Opt-in live Anthropic tests are available and passed locally with
   `SLACK_VAULT_RUN_LIVE_AI_TESTS=1`:
   - `uv run pytest tests/test_ai.py -k live -q --no-cov`;
@@ -158,10 +186,17 @@ Status as of 2026-06-13:
 - The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
   app state ignored.
 
-Next implementation phase: Phase 5 Local Retrieval and Q&A. Broader synthesis
-quality tuning, richer note-update behavior, and repeated live-document
-hardening are intentionally tracked later in Phase 10 so the POC can first
-complete the full ingestion-to-question-answering loop.
+Next implementation phase: Phase 6 Slack Ingestion POC.
+
+Immediate next steps:
+
+1. Wire Slack ingestion to the existing archive, extraction, optional
+   enhancement, synthesis, source-record, and Git-commit pipeline.
+2. Keep Slack Q&A, vector retrieval, and shared deployment out of Phase 6.
+
+Broader synthesis quality tuning, richer note-update behavior, and repeated
+live-document hardening are intentionally tracked later in Phase 10 so the POC
+can first complete the full ingestion-to-question-answering loop.
 
 ## 4. Phase 0: Project And Vault Skeleton
 
@@ -589,7 +624,7 @@ Implement question answering over the vault before adding Slack Q&A.
 
 - Vault search interface.
 - Frontmatter metadata search.
-- Simple lexical retrieval over Markdown content.
+- Obsidian CLI search over vault Markdown content.
 - Citation-aware context builder.
 - AI answer generation prompt.
 - Local CLI command:
@@ -603,8 +638,46 @@ Implement question answering over the vault before adding Slack Q&A.
   notes.
 - The answer includes citations to knowledge notes and source records.
 - If the vault lacks evidence, the answer says so.
-- Tests cover retrieval ranking basics and answer prompt assembly with mocked AI
-  responses.
+- Tests cover Obsidian CLI search-hit mapping and answer prompt assembly with
+  mocked AI responses.
+
+### Completion Notes
+
+Phase 5 is implemented as a local-only slice. It does not add Slack handlers,
+queues, or shared deployment state.
+
+- `src/slack_vault/retrieval.py` includes:
+  - a vault note model for knowledge notes and source records;
+  - Markdown/frontmatter loading from the configured vault;
+  - Obsidian CLI search over the configured vault;
+  - source-ID and source-record lookup helpers.
+- The answer-context builder returns compact grounded snippets with:
+  - note path;
+  - note title;
+  - source IDs;
+  - source-record paths when available;
+  - excerpt text used for the answer.
+- `src/slack_vault/qa.py` includes:
+  - an answer-generation prompt contract;
+  - an Anthropic-backed local answerer using the existing retrying AI text
+    provider;
+  - a deterministic no-evidence response when retrieval finds no useful
+    context.
+- CLI support includes:
+  - `slack-vault ask "question"` for local Q&A;
+  - `make ask QUESTION="question"` wrapper;
+  - output that includes the answer and Markdown-style citations.
+- Tests cover:
+  - frontmatter/body loading;
+  - Obsidian CLI command construction and result parsing;
+  - Obsidian search-hit mapping from knowledge notes and source records;
+  - citation-context construction;
+  - no-evidence behavior;
+  - mocked AI prompt assembly and answer parsing;
+  - CLI behavior with a temporary vault fixture.
+- One live local Q&A smoke test passed against the current DOCX-derived vault
+  notes. Original source documents and full evidence artifacts remain outside
+  Git.
 
 ## 10. Phase 6: Slack Ingestion POC
 
@@ -787,4 +860,5 @@ choices without a specific reason.
 - Decide whether the first Slack POC uses Socket Mode or a public HTTP endpoint.
   Status: unresolved; not needed for Phase 1.
 - Decide whether vector retrieval is required in the POC or can follow the first
-  lexical Q&A loop. Status: unresolved; not needed for Phase 1.
+  Obsidian CLI-backed Q&A loop. Decision: vector retrieval can follow the local
+  Obsidian search and Q&A path.

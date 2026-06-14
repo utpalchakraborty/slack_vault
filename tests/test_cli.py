@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from slack_vault.ai import AITextRequest, AITextResponse
 from slack_vault.cli import main
 from slack_vault.config import Settings
 from slack_vault.synthesis import (
@@ -221,8 +222,84 @@ def test_ingest_file_commits_vault_by_default(
     assert _git(vault_path, "ls-files").startswith("20 Sources/sources/source-")
 
 
+def test_ask_returns_no_evidence_without_ai_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(tmp_path / "vault"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "slack_vault.cli.ObsidianCliSearch",
+        lambda vault_name: _FakeCliObsidianSearch(()),
+    )
+
+    exit_code = main(["ask", "What is unknown?"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "I could not find enough relevant vault context" in captured.out
+    assert "Citations: none" in captured.out
+
+
+def test_ask_answers_from_vault_with_mocked_ai(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault_path = tmp_path / "vault"
+    _write_qa_fixture(vault_path)
+    monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(vault_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "slack_vault.cli.AnthropicAIProvider.from_settings",
+        _fake_qa_provider_from_settings,
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.ObsidianCliSearch",
+        lambda vault_name: _FakeCliObsidianSearch(
+            (Path("10 Knowledge/project-alpha-plan.md"),)
+        ),
+    )
+
+    exit_code = main(["ask", "What does Project Alpha need?"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Answer:" in captured.out
+    assert "Project Alpha needs local-first ingest [1]." in captured.out
+    assert "[[10 Knowledge/project-alpha-plan|Project Alpha Plan]]" in captured.out
+    assert "[[20 Sources/sources/source-alpha|source-alpha]]" in captured.out
+
+
 def _fake_provider_from_settings(settings: Settings) -> object:
     return object()
+
+
+def _fake_qa_provider_from_settings(settings: Settings) -> object:
+    return _FakeAskTextProvider()
+
+
+class _FakeAskTextProvider:
+    def complete_text(self, request: AITextRequest) -> AITextResponse:
+        return AITextResponse(
+            text=(
+                '{"answer": "Project Alpha needs local-first ingest [1].", '
+                '"citation_ids": [1]}'
+            ),
+            model="fake-model",
+            stop_reason="end_turn",
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+
+class _FakeCliObsidianSearch:
+    def __init__(self, paths: tuple[Path, ...]) -> None:
+        self.paths = paths
+
+    def search(self, query: str, *, limit: int) -> tuple[Path, ...]:
+        return self.paths[:limit]
 
 
 class _FakeCliSynthesizer:
@@ -310,4 +387,47 @@ def _run_git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=True,
         capture_output=True,
         text=True,
+    )
+
+
+def _write_qa_fixture(vault_path: Path) -> None:
+    note_path = vault_path / "10 Knowledge/project-alpha-plan.md"
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.write_text(
+        "\n".join(
+            [
+                "---",
+                'title: "Project Alpha Plan"',
+                'type: "knowledge_note"',
+                'note_id: "knowledge-project-alpha-plan"',
+                'source_ids: ["source-alpha"]',
+                'topics: ["Project Alpha"]',
+                'taxonomy: ["projects"]',
+                "---",
+                "",
+                "# Project Alpha Plan",
+                "",
+                "Project Alpha needs local-first ingest.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source_path = vault_path / "20 Sources/sources/source-alpha.md"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text(
+        "\n".join(
+            [
+                "---",
+                'title: "Alpha Plan.docx"',
+                'type: "source_record"',
+                'source_id: "source-alpha"',
+                'original_filename: "Alpha Plan.docx"',
+                "---",
+                "",
+                "# Alpha Plan.docx",
+                "",
+            ]
+        ),
+        encoding="utf-8",
     )
