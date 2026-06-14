@@ -41,6 +41,50 @@ def test_render_source_record_includes_archive_and_origin_metadata() -> None:
     assert "Extraction has not run yet." in markdown
 
 
+def test_render_source_record_includes_slack_enterprise_metadata() -> None:
+    ref = ArchivedSourceRef(
+        archive_provider=ArchiveProviderKind.LOCAL,
+        archive_id="sources/2026/06/abcdef1234567890",
+        uri="/archive/sources/2026/06/abcdef1234567890/original",
+        content_hash="abcdef1234567890",
+        original_filename="Example Plan.md",
+        mime_type="text/markdown",
+        size_bytes=12,
+        created_at=datetime(2026, 6, 13, 12, 0, tzinfo=UTC),
+        ingestion_method="slack_file",
+        original_path="slack://T123/F123",
+        uploaded_by="W123",
+        slack_workspace_id="T123",
+        slack_enterprise_id="E123",
+        slack_team_id="T123",
+        slack_context_team_id="T456",
+        slack_channel_id="C123",
+        slack_channel_name="slack-vault-dev-ingest",
+        slack_message_ts="1718300000.000100",
+        slack_thread_ts="1718300000.000100",
+        slack_file_id="F123",
+        slack_message_permalink="https://example.slack.com/archives/C123/p1718300000",
+        slack_file_permalink="https://example.slack.com/files/W123/F123/example",
+        slack_event_id="Ev123",
+        slack_initial_comment="Please ingest this.",
+    )
+
+    markdown = render_source_record(ref, "source-2026-06-13-abcdef123456")
+
+    assert 'ingestion_method: "slack_file"' in markdown
+    assert 'slack_enterprise_id: "E123"' in markdown
+    assert 'slack_team_id: "T123"' in markdown
+    assert 'slack_context_team_id: "T456"' in markdown
+    assert 'slack_channel_name: "slack-vault-dev-ingest"' in markdown
+    assert 'slack_thread_ts: "1718300000.000100"' in markdown
+    assert 'slack_event_id: "Ev123"' in markdown
+    assert 'slack_initial_comment: "Please ingest this."' in markdown
+    assert "- Slack Enterprise: E123" in markdown
+    assert "- Slack team: T123" in markdown
+    assert "- Slack channel name: slack-vault-dev-ingest" in markdown
+    assert "- Slack file: https://example.slack.com/files/W123/F123/example" in markdown
+
+
 def test_render_source_record_includes_extracted_evidence() -> None:
     ref = _archived_source_ref()
     markdown = render_source_record(

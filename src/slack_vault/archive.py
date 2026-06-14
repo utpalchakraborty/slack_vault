@@ -27,9 +27,18 @@ class SourceIngestMetadata:
     ingestion_method: str = "local_file"
     original_path: str | None = None
     slack_workspace_id: str | None = None
+    slack_enterprise_id: str | None = None
+    slack_team_id: str | None = None
+    slack_context_team_id: str | None = None
     slack_channel_id: str | None = None
+    slack_channel_name: str | None = None
     slack_message_ts: str | None = None
+    slack_thread_ts: str | None = None
     slack_file_id: str | None = None
+    slack_message_permalink: str | None = None
+    slack_file_permalink: str | None = None
+    slack_event_id: str | None = None
+    slack_initial_comment: str | None = None
     uploaded_by: str | None = None
 
 
@@ -48,9 +57,18 @@ class ArchivedSourceRef:
     ingestion_method: str
     original_path: str | None = None
     slack_workspace_id: str | None = None
+    slack_enterprise_id: str | None = None
+    slack_team_id: str | None = None
+    slack_context_team_id: str | None = None
     slack_channel_id: str | None = None
+    slack_channel_name: str | None = None
     slack_message_ts: str | None = None
+    slack_thread_ts: str | None = None
     slack_file_id: str | None = None
+    slack_message_permalink: str | None = None
+    slack_file_permalink: str | None = None
+    slack_event_id: str | None = None
+    slack_initial_comment: str | None = None
     uploaded_by: str | None = None
 
     def to_metadata_dict(self) -> dict[str, object]:
@@ -77,9 +95,18 @@ class ArchivedSourceRef:
             ingestion_method=str(data["ingestion_method"]),
             original_path=_optional_str(data.get("original_path")),
             slack_workspace_id=_optional_str(data.get("slack_workspace_id")),
+            slack_enterprise_id=_optional_str(data.get("slack_enterprise_id")),
+            slack_team_id=_optional_str(data.get("slack_team_id")),
+            slack_context_team_id=_optional_str(data.get("slack_context_team_id")),
             slack_channel_id=_optional_str(data.get("slack_channel_id")),
+            slack_channel_name=_optional_str(data.get("slack_channel_name")),
             slack_message_ts=_optional_str(data.get("slack_message_ts")),
+            slack_thread_ts=_optional_str(data.get("slack_thread_ts")),
             slack_file_id=_optional_str(data.get("slack_file_id")),
+            slack_message_permalink=_optional_str(data.get("slack_message_permalink")),
+            slack_file_permalink=_optional_str(data.get("slack_file_permalink")),
+            slack_event_id=_optional_str(data.get("slack_event_id")),
+            slack_initial_comment=_optional_str(data.get("slack_initial_comment")),
             uploaded_by=_optional_str(data.get("uploaded_by")),
         )
 
@@ -163,9 +190,18 @@ class LocalFilesystemArchiveProvider:
             ingestion_method=metadata.ingestion_method,
             original_path=metadata.original_path or str(source_path),
             slack_workspace_id=metadata.slack_workspace_id,
+            slack_enterprise_id=metadata.slack_enterprise_id,
+            slack_team_id=metadata.slack_team_id,
+            slack_context_team_id=metadata.slack_context_team_id,
             slack_channel_id=metadata.slack_channel_id,
+            slack_channel_name=metadata.slack_channel_name,
             slack_message_ts=metadata.slack_message_ts,
+            slack_thread_ts=metadata.slack_thread_ts,
             slack_file_id=metadata.slack_file_id,
+            slack_message_permalink=metadata.slack_message_permalink,
+            slack_file_permalink=metadata.slack_file_permalink,
+            slack_event_id=metadata.slack_event_id,
+            slack_initial_comment=metadata.slack_initial_comment,
             uploaded_by=metadata.uploaded_by,
         )
         metadata_path.write_text(

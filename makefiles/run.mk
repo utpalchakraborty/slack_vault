@@ -1,4 +1,4 @@
-.PHONY: ask ingest-file init-vault init-vault-overwrite run show-config
+.PHONY: ask check-slack-setup ingest-file init-vault init-vault-overwrite run run-slack show-config slack-worker
 
 run: show-config
 
@@ -22,3 +22,12 @@ ifndef QUESTION
 	$(error QUESTION is required. Usage: make ask QUESTION="question")
 endif
 	$(UV_RUN) slack-vault ask "$(QUESTION)" $(if $(LIMIT),--limit "$(LIMIT)")
+
+run-slack:
+	$(UV_RUN) slack-vault run-slack
+
+check-slack-setup:
+	$(UV_RUN) slack-vault check-slack-setup
+
+slack-worker:
+	$(UV_RUN) slack-vault slack-worker $(if $(ONCE),--once)

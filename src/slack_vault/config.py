@@ -17,7 +17,11 @@ DEFAULT_ARCHIVE_PATH = ".data/archive"
 DEFAULT_LOG_PATH = Path(".data/logs/slack-vault.log")
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOG_BACKUP_COUNT = 14
+DEFAULT_OPERATIONAL_DB_PATH = Path(".data/slack-vault.sqlite3")
 DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS = 75.0
+DEFAULT_SLACK_INGEST_ENHANCE = False
+DEFAULT_SLACK_INGEST_SYNTHESIZE = True
+DEFAULT_SLACK_INGEST_GIT_COMMIT = True
 DEFAULT_AI_RETRY_MAX_ATTEMPTS = 3
 DEFAULT_AI_RETRY_INITIAL_DELAY_SECONDS = 60.0
 DEFAULT_AI_RETRY_MAX_DELAY_SECONDS = 300.0
@@ -44,6 +48,13 @@ class ArchiveProviderKind(StrEnum):
     GCS = "gcs"
 
 
+class SlackEventDeliveryMode(StrEnum):
+    """Supported Slack event delivery modes."""
+
+    SOCKET = "socket"
+    HTTP = "http"
+
+
 @dataclass(frozen=True)
 class SlackSettings:
     """Slack credentials and routing settings."""
@@ -51,7 +62,13 @@ class SlackSettings:
     bot_token: str | None
     app_token: str | None
     signing_secret: str | None
+    event_delivery_mode: SlackEventDeliveryMode
+    enterprise_id: str | None
+    team_id: str | None
     ingestion_channel_id: str | None
+    ingestion_channel_name: str | None
+    ingestion_channel_is_private: bool | None
+    allow_external_shared_channels: bool
 
 
 @dataclass(frozen=True)
@@ -86,10 +103,20 @@ class LoggingSettings:
 
 
 @dataclass(frozen=True)
+class OperationalSettings:
+    """Local operational state settings."""
+
+    db_path: Path
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     """Ingestion orchestration settings."""
 
     automatic_ingest_delay_seconds: float
+    slack_ingest_enhance: bool
+    slack_ingest_synthesize: bool
+    slack_ingest_git_commit: bool
 
 
 @dataclass(frozen=True)
@@ -104,6 +131,7 @@ class Settings:
     slack: SlackSettings
     ai: AISettings
     logging: LoggingSettings
+    operational: OperationalSettings
     ingestion: IngestionSettings
 
     @classmethod
@@ -142,8 +170,28 @@ class Settings:
                 bot_token=_blank_to_none(values.get("SLACK_BOT_TOKEN")),
                 app_token=_blank_to_none(values.get("SLACK_APP_TOKEN")),
                 signing_secret=_blank_to_none(values.get("SLACK_SIGNING_SECRET")),
+                event_delivery_mode=SlackEventDeliveryMode(
+                    values.get(
+                        "SLACK_VAULT_SLACK_EVENT_DELIVERY_MODE",
+                        SlackEventDeliveryMode.SOCKET,
+                    )
+                ),
+                enterprise_id=_blank_to_none(values.get("SLACK_VAULT_ENTERPRISE_ID")),
+                team_id=_blank_to_none(values.get("SLACK_VAULT_TEAM_ID")),
                 ingestion_channel_id=_blank_to_none(
                     values.get("SLACK_VAULT_INGESTION_CHANNEL_ID")
+                ),
+                ingestion_channel_name=_blank_to_none(
+                    values.get("SLACK_VAULT_INGESTION_CHANNEL_NAME")
+                ),
+                ingestion_channel_is_private=_optional_bool_value(
+                    values,
+                    "SLACK_VAULT_INGESTION_CHANNEL_IS_PRIVATE",
+                ),
+                allow_external_shared_channels=_bool_value(
+                    values,
+                    "SLACK_VAULT_ALLOW_EXTERNAL_SHARED_CHANNELS",
+                    False,
                 ),
             ),
             ai=AISettings(
@@ -201,11 +249,33 @@ class Settings:
                     DEFAULT_LOG_BACKUP_COUNT,
                 ),
             ),
+            operational=OperationalSettings(
+                db_path=_path_value(
+                    values,
+                    "SLACK_VAULT_OPERATIONAL_DB_PATH",
+                    DEFAULT_OPERATIONAL_DB_PATH,
+                ),
+            ),
             ingestion=IngestionSettings(
                 automatic_ingest_delay_seconds=_non_negative_float_value(
                     values,
                     "SLACK_VAULT_AUTOMATIC_INGEST_DELAY_SECONDS",
                     DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS,
+                ),
+                slack_ingest_enhance=_bool_value(
+                    values,
+                    "SLACK_VAULT_SLACK_INGEST_ENHANCE",
+                    DEFAULT_SLACK_INGEST_ENHANCE,
+                ),
+                slack_ingest_synthesize=_bool_value(
+                    values,
+                    "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE",
+                    DEFAULT_SLACK_INGEST_SYNTHESIZE,
+                ),
+                slack_ingest_git_commit=_bool_value(
+                    values,
+                    "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT",
+                    DEFAULT_SLACK_INGEST_GIT_COMMIT,
                 ),
             ),
         )
@@ -223,7 +293,17 @@ class Settings:
                 "bot_token": _redact(self.slack.bot_token),
                 "app_token": _redact(self.slack.app_token),
                 "signing_secret": _redact(self.slack.signing_secret),
+                "event_delivery_mode": self.slack.event_delivery_mode.value,
+                "enterprise_id": self.slack.enterprise_id,
+                "team_id": self.slack.team_id,
                 "ingestion_channel_id": self.slack.ingestion_channel_id,
+                "ingestion_channel_name": self.slack.ingestion_channel_name,
+                "ingestion_channel_is_private": (
+                    self.slack.ingestion_channel_is_private
+                ),
+                "allow_external_shared_channels": (
+                    self.slack.allow_external_shared_channels
+                ),
             },
             "ai": {
                 "provider": self.ai.provider.value,
@@ -243,10 +323,16 @@ class Settings:
                 "level": self.logging.level,
                 "backup_count": self.logging.backup_count,
             },
+            "operational": {
+                "db_path": str(self.operational.db_path),
+            },
             "ingestion": {
                 "automatic_ingest_delay_seconds": (
                     self.ingestion.automatic_ingest_delay_seconds
                 ),
+                "slack_ingest_enhance": self.ingestion.slack_ingest_enhance,
+                "slack_ingest_synthesize": self.ingestion.slack_ingest_synthesize,
+                "slack_ingest_git_commit": self.ingestion.slack_ingest_git_commit,
             },
         }
         return json.dumps(data, indent=2, sort_keys=True)
@@ -335,6 +421,25 @@ def _positive_float_value(
     if value <= 0:
         raise ValueError(f"{key} must be greater than 0")
     return value
+
+
+def _bool_value(values: Mapping[str, str], key: str, default: bool) -> bool:
+    raw_value = values.get(key)
+    if raw_value is None or not raw_value.strip():
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{key} must be a boolean value")
+
+
+def _optional_bool_value(values: Mapping[str, str], key: str) -> bool | None:
+    raw_value = values.get(key)
+    if raw_value is None or not raw_value.strip():
+        return None
+    return _bool_value(values, key, False)
 
 
 def _blank_to_none(value: str | None) -> str | None:

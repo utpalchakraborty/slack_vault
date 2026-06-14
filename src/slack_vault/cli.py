@@ -24,6 +24,12 @@ from slack_vault.retrieval import (
     build_answer_context,
     load_vault_index,
 )
+from slack_vault.slack_app import create_slack_web_client, run_socket_mode_app
+from slack_vault.slack_ingest import build_slack_ingestion_service
+from slack_vault.slack_setup import (
+    render_slack_setup_check,
+    run_slack_setup_check,
+)
 from slack_vault.synthesis import AnthropicKnowledgeSynthesizer, KnowledgeSynthesizer
 from slack_vault.vault_bootstrap import bootstrap_vault
 
@@ -98,6 +104,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Maximum number of retrieved knowledge notes to use.",
+    )
+
+    subparsers.add_parser(
+        "run-slack",
+        help="Run the Slack ingestion event listener with Socket Mode.",
+    )
+
+    subparsers.add_parser(
+        "check-slack-setup",
+        help="Check Slack credentials, channel access, and Socket Mode readiness.",
+    )
+
+    slack_worker_parser = subparsers.add_parser(
+        "slack-worker",
+        help="Process queued Slack ingestion jobs.",
+    )
+    slack_worker_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process at most one queued Slack job and exit.",
     )
 
     return parser
@@ -239,6 +265,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             result = AnswerResult.no_evidence_result(context)
         print(render_answer_result(result))
+        return 0
+
+    if args.command == "run-slack":
+        print(f"Log file: {log_path}")
+        print("Starting Slack Vault Socket Mode listener")
+        run_socket_mode_app(settings)
+        return 0
+
+    if args.command == "check-slack-setup":
+        setup_result = run_slack_setup_check(settings)
+        print(render_slack_setup_check(setup_result))
+        return 0 if setup_result.ok else 1
+
+    if args.command == "slack-worker":
+        print(f"Log file: {log_path}")
+        service = build_slack_ingestion_service(
+            settings,
+            slack_client=create_slack_web_client(settings),
+        )
+        processed = service.process_next_job()
+        if processed is None:
+            print("No queued Slack ingestion jobs.")
+        else:
+            print(f"Processed Slack ingestion job: {processed.job_id}")
+            print(f"Status: {processed.status.value}")
+            if processed.source_id is not None:
+                print(f"Source: {processed.source_id}")
+            if processed.error_message is not None:
+                print(f"Error: {processed.error_message}")
+        if args.once:
+            return 0
+        while True:
+            processed = service.process_next_job()
+            if processed is None:
+                break
+            print(f"Processed Slack ingestion job: {processed.job_id}")
+            print(f"Status: {processed.status.value}")
+        print(f"Operational DB: {service.state.db_path}")
         return 0
 
     raise ValueError(f"Unsupported command: {args.command}")

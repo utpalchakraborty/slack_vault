@@ -67,16 +67,22 @@ These choices are defaults for the POC and can be revised before coding.
   `.data/logs/slack-vault.log` in the app repository.
 - Logs rotate daily at midnight, rotated logs are gzip-compressed, and the
   retained rotated-log count is read from `SLACK_VAULT_LOG_BACKUP_COUNT`.
+- The Phase 6 SQLite operational state path is read from
+  `SLACK_VAULT_OPERATIONAL_DB_PATH` and defaults to
+  `.data/slack-vault.sqlite3`.
 - The AI provider is read from `SLACK_VAULT_AI_PROVIDER` and defaults to
   `anthropic`.
 - Anthropic credentials are read from `ANTHROPIC_API_KEY`.
 - Haiku 4.5 is configured through `SLACK_VAULT_ANTHROPIC_MODEL`.
 - CLI/default settings load `.env` from the current working directory when it
   exists. Real environment variables override matching `.env` values.
+- Slack Phase 6 routing settings include event delivery mode, Enterprise ID,
+  workspace/team ID, ingestion channel ID/name/privacy, external shared-channel
+  policy, and default Slack-ingest enhancement/synthesis/Git-commit behavior.
 
 ## 3.2 Current Progress
 
-Status as of 2026-06-13:
+Status as of 2026-06-14:
 
 - Phase 0 is complete and pushed.
 - Phase 1 is complete and pushed.
@@ -165,20 +171,37 @@ Status as of 2026-06-13:
 - Phase 5 was smoke-tested against the current DOCX-derived vault notes:
   `Hubspot - Current State.docx` answered with a cited knowledge note and source
   record for `source-2026-06-13-b7b566e4c0e9`.
+- Phase 6 Slack ingestion groundwork is implemented and unit-tested:
+  - Slack Events API payload normalization for `message` file uploads and
+    `file_shared` events;
+  - SQLite operational state for Slack event idempotency and ingestion jobs;
+  - Slack `files.info`, authenticated file download, and thread reply helpers;
+  - Slack setup preflight checks through `slack-vault check-slack-setup` and
+    `make check-slack-setup`;
+  - Socket Mode app wiring through `slack-vault run-slack` and
+    `make run-slack`;
+  - queued-job processing through `slack-vault slack-worker` and
+    `make slack-worker`;
+  - Slack Enterprise Grid metadata propagation into archive/source records;
+  - reusable `ingest_file_path(...)` so Slack-downloaded temporary files use the
+    same archive, extraction, optional enhancement, synthesis, source-record,
+    and Git-commit pipeline as local ingest.
 - Local POC reset tooling is available for repeated smoke-test loops:
   `slack-vault clean-poc-data --yes` and `make clean-poc-data` remove generated
   knowledge notes, generated source records, and the local archive path while
   leaving input files such as sample DOCX documents in place.
-- Latest pushed code repository commit:
+- Latest pushed code repository commit before the current local Phase 6 changes:
   `9bed310 Implement synthesis and vault git integration`.
 - Latest pushed Obsidian vault repository commit:
   `c9a1898 Ingest source-2026-06-13-b7b566e4c0e9`.
-- Both repositories are clean and tracking `origin/main`.
+- The current code repository has local Phase 6 changes pending review/commit.
+- The Obsidian vault repository was last verified clean and tracking
+  `origin/main` after the Phase 5 smoke test.
 - The code repository is configured with `uv`, `ruff`, `mypy`, `pytest`,
   `pytest-cov`, `pre-commit`, `AGENTS.md`, and split Make targets under
   `makefiles/`.
 - `make check` passes with no external services configured:
-  `111 passed, 2 skipped`, total coverage `90.90%`.
+  `141 passed, 2 skipped`, total coverage `91.29%`.
 - Opt-in live Anthropic tests are available and passed locally with
   `SLACK_VAULT_RUN_LIVE_AI_TESTS=1`:
   - `uv run pytest tests/test_ai.py -k live -q --no-cov`;
@@ -186,13 +209,16 @@ Status as of 2026-06-13:
 - The Obsidian vault repository opens as a vault and keeps local `.obsidian/`
   app state ignored.
 
-Next implementation phase: Phase 6 Slack Ingestion POC.
+Current implementation focus: Phase 6 live Slack Ingestion POC validation.
 
 Immediate next steps:
 
-1. Wire Slack ingestion to the existing archive, extraction, optional
-   enhancement, synthesis, source-record, and Git-commit pipeline.
-2. Keep Slack Q&A, vector retrieval, and shared deployment out of Phase 6.
+1. Configure the development Slack app credentials and
+   `#slack-vault-dev-ingest` channel values in `.env`.
+2. Run the Socket Mode listener and worker locally, then upload a sanitized
+   Markdown file to validate event receipt, download, archive, source record,
+   optional synthesis, Git commit, and Slack thread replies.
+3. Keep Slack Q&A, vector retrieval, and shared deployment out of Phase 6.
 
 Broader synthesis quality tuning, richer note-update behavior, and repeated
 live-document hardening are intentionally tracked later in Phase 10 so the POC
@@ -685,16 +711,26 @@ queues, or shared deployment state.
 
 Connect the working local ingestion pipeline to Slack.
 
+Detailed planning for this phase lives in
+[`docs/slack-integration-plan.md`](slack-integration-plan.md). Phase 6 should
+use Slack Enterprise-aware metadata and app setup, but still keep the first
+implementation to one configured ingestion channel.
+
 ### Deliverables
 
 - Slack app configuration documentation.
 - Slack event handler for the ingestion channel.
 - File download from Slack.
 - Slack metadata capture:
+  - enterprise ID when present;
   - workspace ID;
+  - context team ID when present;
   - channel ID;
+  - channel name when available;
   - message timestamp;
+  - thread timestamp;
   - file ID;
+  - stable Slack permalinks;
   - uploader;
   - optional message comment.
 - Ingestion job creation.
@@ -710,6 +746,35 @@ Connect the working local ingestion pipeline to Slack.
 - A Git commit is created.
 - The bot replies in Slack with ingestion status and note references.
 - Duplicate Slack events do not create duplicate source records.
+
+### Implementation Notes
+
+The unit-testable Phase 6 slice is implemented. Live Slack validation is still
+pending local `.env` credentials and the development ingestion channel.
+
+Implemented entrypoints:
+
+- `slack-vault check-slack-setup` / `make check-slack-setup` verifies
+  credentials, bot auth, channel access, channel membership, channel history
+  scope, `files.info` scope, and Socket Mode readiness without posting messages.
+- `slack-vault run-slack` / `make run-slack` starts the Slack Bolt Socket Mode
+  listener and queues ingestion jobs.
+- `slack-vault slack-worker --once` processes at most one queued job.
+- `slack-vault slack-worker` processes queued jobs until the SQLite queue is
+  empty.
+
+Implemented code modules:
+
+- `src/slack_vault/slack_app.py`
+- `src/slack_vault/slack_events.py`
+- `src/slack_vault/slack_files.py`
+- `src/slack_vault/ops_state.py`
+- `src/slack_vault/slack_ingest.py`
+
+Implemented tests cover Slack event normalization, SQLite idempotency, file
+metadata/download helpers, Slack ingestion orchestration, Socket Mode app
+wiring, CLI worker commands, source-record metadata rendering, and the reusable
+file-ingest path.
 
 ## 11. Phase 7: Slack Q&A POC
 

@@ -8,6 +8,8 @@ import pytest
 from slack_vault.ai import AITextRequest, AITextResponse
 from slack_vault.cli import main
 from slack_vault.config import Settings
+from slack_vault.ops_state import IngestionJob, IngestionJobStatus
+from slack_vault.slack_setup import SlackSetupCheck, SlackSetupCheckResult
 from slack_vault.synthesis import (
     KnowledgeNoteWriteResult,
     KnowledgeSynthesisResult,
@@ -272,6 +274,129 @@ def test_ask_answers_from_vault_with_mocked_ai(
     assert "[[20 Sources/sources/source-alpha|source-alpha]]" in captured.out
 
 
+def test_run_slack_invokes_socket_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[Settings] = []
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-token")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-token")
+    monkeypatch.setattr(
+        "slack_vault.cli.run_socket_mode_app",
+        lambda settings: calls.append(settings),
+    )
+
+    exit_code = main(["run-slack"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Starting Slack Vault Socket Mode listener" in captured.out
+    assert len(calls) == 1
+    assert calls[0].slack.bot_token == "xoxb-token"
+
+
+def test_check_slack_setup_reports_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "slack_vault.cli.run_slack_setup_check",
+        lambda settings: SlackSetupCheckResult(
+            checks=(SlackSetupCheck("bot auth.test", True, "team=T123"),)
+        ),
+    )
+
+    exit_code = main(["check-slack-setup"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Slack Vault setup check" in captured.out
+    assert "PASS: bot auth.test - team=T123" in captured.out
+
+
+def test_check_slack_setup_reports_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "slack_vault.cli.run_slack_setup_check",
+        lambda settings: SlackSetupCheckResult(
+            checks=(
+                SlackSetupCheck("channel conversations.info", False, "missing_scope"),
+            )
+        ),
+    )
+
+    exit_code = main(["check-slack-setup"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "FAIL: channel conversations.info - missing_scope" in captured.out
+
+
+def test_slack_worker_once_reports_empty_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _FakeCliSlackService(tmp_path, ())
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-token")
+    monkeypatch.setenv("SLACK_VAULT_OPERATIONAL_DB_PATH", str(tmp_path / "ops.db"))
+    monkeypatch.setattr(
+        "slack_vault.cli.create_slack_web_client", lambda settings: object()
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.build_slack_ingestion_service",
+        lambda settings, *, slack_client: service,
+    )
+
+    exit_code = main(["slack-worker", "--once"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "No queued Slack ingestion jobs." in captured.out
+    assert service.calls == 1
+
+
+def test_slack_worker_processes_until_queue_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _FakeCliSlackService(
+        tmp_path,
+        (
+            _cli_job(
+                job_id="job-first",
+                status=IngestionJobStatus.SUCCEEDED,
+                source_id="source-123",
+                error_message="warning only",
+            ),
+            _cli_job(job_id="job-second", status=IngestionJobStatus.FAILED),
+        ),
+    )
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-token")
+    monkeypatch.setenv("SLACK_VAULT_OPERATIONAL_DB_PATH", str(tmp_path / "ops.db"))
+    monkeypatch.setattr(
+        "slack_vault.cli.create_slack_web_client", lambda settings: object()
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.build_slack_ingestion_service",
+        lambda settings, *, slack_client: service,
+    )
+
+    exit_code = main(["slack-worker"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Processed Slack ingestion job: job-first" in captured.out
+    assert "Source: source-123" in captured.out
+    assert "Error: warning only" in captured.out
+    assert "Processed Slack ingestion job: job-second" in captured.out
+    assert "Operational DB:" in captured.out
+    assert service.calls == 3
+
+
 def _fake_provider_from_settings(settings: Settings) -> object:
     return object()
 
@@ -300,6 +425,62 @@ class _FakeCliObsidianSearch:
 
     def search(self, query: str, *, limit: int) -> tuple[Path, ...]:
         return self.paths[:limit]
+
+
+class _FakeCliSlackState:
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+
+
+class _FakeCliSlackService:
+    def __init__(self, tmp_path: Path, jobs: tuple[IngestionJob, ...]) -> None:
+        self.state = _FakeCliSlackState(tmp_path / "ops.db")
+        self.jobs = list(jobs)
+        self.calls = 0
+
+    def process_next_job(self) -> IngestionJob | None:
+        self.calls += 1
+        if not self.jobs:
+            return None
+        return self.jobs.pop(0)
+
+
+def _cli_job(
+    *,
+    job_id: str,
+    status: IngestionJobStatus,
+    source_id: str | None = None,
+    error_message: str | None = None,
+) -> IngestionJob:
+    return IngestionJob(
+        job_id=job_id,
+        status=status,
+        slack_event_id="Ev123",
+        dedupe_key=f"dedupe-{job_id}",
+        enterprise_id="E123",
+        team_id="T123",
+        context_team_id="TCTX",
+        channel_id="C123",
+        user_id="W123",
+        event_ts="1718300000.000200",
+        message_ts="1718300000.000100",
+        thread_ts="1718300000.000100",
+        file_id="F123",
+        initial_comment="Please ingest this.",
+        file_name="source.md",
+        file_mime_type="text/markdown",
+        file_size_bytes=12,
+        source_id=source_id,
+        source_record_path=None,
+        knowledge_note_paths=(),
+        git_commit_hash=None,
+        slack_result_message_ts=None,
+        error_stage=None,
+        error_message=error_message,
+        created_at="2026-06-14T12:00:00Z",
+        started_at="2026-06-14T12:01:00Z",
+        finished_at="2026-06-14T12:02:00Z",
+    )
 
 
 class _FakeCliSynthesizer:

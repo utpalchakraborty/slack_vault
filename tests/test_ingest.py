@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from slack_vault.archive import ArchivedSourceRef
+from slack_vault.archive import ArchivedSourceRef, SourceIngestMetadata
 from slack_vault.config import Settings
 from slack_vault.enhancement import (
     EnhancedEvidenceBlock,
@@ -17,6 +17,7 @@ from slack_vault.extraction import ExtractionResult, ExtractionStatus
 from slack_vault.git_vault import VaultGitCommitResult
 from slack_vault.ingest import (
     IngestProcessingError,
+    ingest_file_path,
     ingest_local_file,
     ingest_local_files,
 )
@@ -61,6 +62,46 @@ def test_ingest_local_file_archives_extracts_and_writes_source_record(
     assert artifact["extraction"]["evidence"][0]["text"] == (
         "# Overview\n\nSource evidence."
     )
+
+
+def test_ingest_file_path_accepts_explicit_slack_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "source.md"
+    source.write_text("# Overview\n\nSource evidence.", encoding="utf-8")
+    settings = Settings.from_env(
+        {
+            "SLACK_VAULT_ARCHIVE_PATH": str(tmp_path / "archive"),
+            "SLACK_VAULT_OBSIDIAN_PATH": str(tmp_path / "vault"),
+        }
+    )
+
+    result = ingest_file_path(
+        source,
+        settings,
+        metadata=SourceIngestMetadata(
+            ingestion_method="slack_file",
+            original_path="slack://T123/F123",
+            uploaded_by="W123",
+            slack_workspace_id="T123",
+            slack_enterprise_id="E123",
+            slack_team_id="T123",
+            slack_context_team_id="T456",
+            slack_channel_id="C123",
+            slack_channel_name="slack-vault-dev-ingest",
+            slack_message_ts="1718300000.000100",
+            slack_thread_ts="1718300000.000100",
+            slack_file_id="F123",
+            slack_file_permalink="https://example.slack.com/files/W123/F123/example",
+            slack_event_id="Ev123",
+            slack_initial_comment="Please ingest this.",
+        ),
+    )
+
+    record = result.source_record.path.read_text(encoding="utf-8")
+
+    assert result.archived_source.ingestion_method == "slack_file"
+    assert result.archived_source.slack_enterprise_id == "E123"
+    assert 'slack_event_id: "Ev123"' in record
+    assert 'slack_initial_comment: "Please ingest this."' in record
 
 
 def test_ingest_local_file_can_run_optional_evidence_enhancement(

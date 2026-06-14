@@ -127,6 +127,37 @@ Sequential automatic ingest flows use
 The default is 75 seconds so later Slack batch ingestion does not immediately
 hit token-per-minute limits after processing a large document.
 
+To run the Phase 6 Slack ingestion POC locally, configure the Slack values in
+`.env`, then verify credentials, channel access, and Socket Mode readiness:
+
+```sh
+make check-slack-setup
+```
+
+If the setup check passes, start the Socket Mode listener:
+
+```sh
+make run-slack
+```
+
+In another terminal, process queued Slack ingestion jobs:
+
+```sh
+make slack-worker
+```
+
+For a single job attempt during development, use:
+
+```sh
+make slack-worker ONCE=1
+```
+
+The listener records Slack events and queues jobs in
+`SLACK_VAULT_OPERATIONAL_DB_PATH`. The worker downloads Slack files to local
+temporary storage outside Git, then runs the same archive, extraction, optional
+enhancement, optional synthesis, source-record, and Git-commit pipeline used by
+local file ingest.
+
 ## Development Checks
 
 ```sh

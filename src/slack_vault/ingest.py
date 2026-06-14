@@ -124,10 +124,40 @@ def ingest_local_file(
 ) -> LocalFileIngestResult:
     """Archive a local file, extract evidence, and write vault records."""
 
+    return ingest_file_path(
+        file_path,
+        settings,
+        metadata=SourceIngestMetadata(
+            ingestion_method="local_file",
+            original_path=str(file_path.expanduser()),
+            uploaded_by=uploaded_by,
+        ),
+        overwrite_source_record=overwrite_source_record,
+        evidence_enhancer=evidence_enhancer,
+        knowledge_synthesizer=knowledge_synthesizer,
+        vault_committer=vault_committer,
+        now=now,
+    )
+
+
+def ingest_file_path(
+    file_path: Path,
+    settings: Settings,
+    *,
+    metadata: SourceIngestMetadata,
+    overwrite_source_record: bool = False,
+    evidence_enhancer: EvidenceEnhancer | None = None,
+    knowledge_synthesizer: KnowledgeSynthesizer | None = None,
+    vault_committer: VaultCommitter | None = None,
+    now: datetime | None = None,
+) -> LocalFileIngestResult:
+    """Archive a file path with explicit source metadata and write vault records."""
+
     logger.info(
-        "Starting local file ingest path=%s vault_path=%s archive_provider=%s "
+        "Starting file ingest path=%s method=%s vault_path=%s archive_provider=%s "
         "enhance_requested=%s synthesize_requested=%s git_commit_requested=%s",
         file_path,
+        metadata.ingestion_method,
         settings.obsidian_vault_path,
         settings.archive_provider.value,
         evidence_enhancer is not None,
@@ -141,11 +171,6 @@ def ingest_local_file(
         )
 
     provider = LocalFilesystemArchiveProvider(Path(settings.archive_path))
-    metadata = SourceIngestMetadata(
-        ingestion_method="local_file",
-        original_path=str(file_path.expanduser()),
-        uploaded_by=uploaded_by,
-    )
     archived_source = provider.save_source(file_path, metadata, now=now)
     logger.info(
         "Archived source archive_id=%s content_hash=%s filename=%s size_bytes=%s",
@@ -259,7 +284,7 @@ def ingest_local_file(
             git_commit.skipped_reason,
         )
     logger.info(
-        "Local file ingest finished source_id=%s source_record_path=%s",
+        "File ingest finished source_id=%s source_record_path=%s",
         source_record.source_id,
         source_record.path,
     )

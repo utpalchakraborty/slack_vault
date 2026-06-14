@@ -156,9 +156,18 @@ def render_source_record(
             "evidence_artifact_schema": evidence_artifact_schema,
             "uploaded_by": ref.uploaded_by,
             "slack_workspace_id": ref.slack_workspace_id,
+            "slack_enterprise_id": ref.slack_enterprise_id,
+            "slack_team_id": ref.slack_team_id,
+            "slack_context_team_id": ref.slack_context_team_id,
             "slack_channel_id": ref.slack_channel_id,
+            "slack_channel_name": ref.slack_channel_name,
             "slack_message_ts": ref.slack_message_ts,
+            "slack_thread_ts": ref.slack_thread_ts,
             "slack_file_id": ref.slack_file_id,
+            "slack_message_permalink": ref.slack_message_permalink,
+            "slack_file_permalink": ref.slack_file_permalink,
+            "slack_event_id": ref.slack_event_id,
+            "slack_initial_comment": ref.slack_initial_comment,
             "original_path": ref.original_path,
         }
     )
@@ -171,10 +180,22 @@ def render_source_record(
         origin_lines.append(f"- Local source path: `{ref.original_path}`")
     if ref.uploaded_by is not None:
         origin_lines.append(f"- Uploaded by: {ref.uploaded_by}")
+    if ref.slack_enterprise_id is not None:
+        origin_lines.append(f"- Slack Enterprise: {ref.slack_enterprise_id}")
+    if ref.slack_team_id is not None:
+        origin_lines.append(f"- Slack team: {ref.slack_team_id}")
     if ref.slack_channel_id is not None:
         origin_lines.append(f"- Slack channel: {ref.slack_channel_id}")
+    if ref.slack_channel_name is not None:
+        origin_lines.append(f"- Slack channel name: {ref.slack_channel_name}")
     if ref.slack_message_ts is not None:
         origin_lines.append(f"- Slack message timestamp: {ref.slack_message_ts}")
+    if ref.slack_thread_ts is not None:
+        origin_lines.append(f"- Slack thread timestamp: {ref.slack_thread_ts}")
+    if ref.slack_message_permalink is not None:
+        origin_lines.append(f"- Slack message: {ref.slack_message_permalink}")
+    if ref.slack_file_permalink is not None:
+        origin_lines.append(f"- Slack file: {ref.slack_file_permalink}")
 
     return "\n".join(
         [

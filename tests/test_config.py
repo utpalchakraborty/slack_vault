@@ -17,9 +17,14 @@ from slack_vault.config import (
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_LOG_PATH,
+    DEFAULT_OPERATIONAL_DB_PATH,
+    DEFAULT_SLACK_INGEST_ENHANCE,
+    DEFAULT_SLACK_INGEST_GIT_COMMIT,
+    DEFAULT_SLACK_INGEST_SYNTHESIZE,
     AIProvider,
     ArchiveProviderKind,
     Settings,
+    SlackEventDeliveryMode,
 )
 
 CONFIG_ENV_KEYS = (
@@ -31,7 +36,13 @@ CONFIG_ENV_KEYS = (
     "SLACK_BOT_TOKEN",
     "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET",
+    "SLACK_VAULT_SLACK_EVENT_DELIVERY_MODE",
+    "SLACK_VAULT_ENTERPRISE_ID",
+    "SLACK_VAULT_TEAM_ID",
     "SLACK_VAULT_INGESTION_CHANNEL_ID",
+    "SLACK_VAULT_INGESTION_CHANNEL_NAME",
+    "SLACK_VAULT_INGESTION_CHANNEL_IS_PRIVATE",
+    "SLACK_VAULT_ALLOW_EXTERNAL_SHARED_CHANNELS",
     "SLACK_VAULT_AI_PROVIDER",
     "ANTHROPIC_API_KEY",
     "SLACK_VAULT_ANTHROPIC_MODEL",
@@ -44,7 +55,11 @@ CONFIG_ENV_KEYS = (
     "SLACK_VAULT_LOG_PATH",
     "SLACK_VAULT_LOG_LEVEL",
     "SLACK_VAULT_LOG_BACKUP_COUNT",
+    "SLACK_VAULT_OPERATIONAL_DB_PATH",
     "SLACK_VAULT_AUTOMATIC_INGEST_DELAY_SECONDS",
+    "SLACK_VAULT_SLACK_INGEST_ENHANCE",
+    "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE",
+    "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT",
 )
 
 
@@ -56,6 +71,16 @@ def test_settings_default_to_local_slack_obsidian_and_anthropic() -> None:
     assert settings.obsidian_cli_vault_name is None
     assert settings.archive_provider is ArchiveProviderKind.LOCAL
     assert settings.archive_path == ".data/archive"
+    assert settings.slack.bot_token is None
+    assert settings.slack.app_token is None
+    assert settings.slack.signing_secret is None
+    assert settings.slack.event_delivery_mode is SlackEventDeliveryMode.SOCKET
+    assert settings.slack.enterprise_id is None
+    assert settings.slack.team_id is None
+    assert settings.slack.ingestion_channel_id is None
+    assert settings.slack.ingestion_channel_name is None
+    assert settings.slack.ingestion_channel_is_private is None
+    assert settings.slack.allow_external_shared_channels is False
     assert settings.ai.provider is AIProvider.ANTHROPIC
     assert settings.ai.model == ANTHROPIC_HAIKU_45_MODEL
     assert settings.ai.max_input_tokens == ANTHROPIC_HAIKU_45_MAX_INPUT_TOKENS
@@ -70,10 +95,14 @@ def test_settings_default_to_local_slack_obsidian_and_anthropic() -> None:
     assert settings.logging.path == DEFAULT_LOG_PATH
     assert settings.logging.level == DEFAULT_LOG_LEVEL
     assert settings.logging.backup_count == DEFAULT_LOG_BACKUP_COUNT
+    assert settings.operational.db_path == DEFAULT_OPERATIONAL_DB_PATH
     assert (
         settings.ingestion.automatic_ingest_delay_seconds
         == DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS
     )
+    assert settings.ingestion.slack_ingest_enhance == DEFAULT_SLACK_INGEST_ENHANCE
+    assert settings.ingestion.slack_ingest_synthesize == DEFAULT_SLACK_INGEST_SYNTHESIZE
+    assert settings.ingestion.slack_ingest_git_commit == DEFAULT_SLACK_INGEST_GIT_COMMIT
 
 
 def test_settings_read_environment_values() -> None:
@@ -87,7 +116,13 @@ def test_settings_read_environment_values() -> None:
             "SLACK_BOT_TOKEN": "xoxb-abc",
             "SLACK_APP_TOKEN": "xapp-def",
             "SLACK_SIGNING_SECRET": "secret",
+            "SLACK_VAULT_SLACK_EVENT_DELIVERY_MODE": "http",
+            "SLACK_VAULT_ENTERPRISE_ID": "E123",
+            "SLACK_VAULT_TEAM_ID": "T123",
             "SLACK_VAULT_INGESTION_CHANNEL_ID": "C123",
+            "SLACK_VAULT_INGESTION_CHANNEL_NAME": "slack-vault-dev-ingest",
+            "SLACK_VAULT_INGESTION_CHANNEL_IS_PRIVATE": "true",
+            "SLACK_VAULT_ALLOW_EXTERNAL_SHARED_CHANNELS": "yes",
             "SLACK_VAULT_AI_PROVIDER": "anthropic",
             "ANTHROPIC_API_KEY": "sk-ant-test-value",
             "SLACK_VAULT_ANTHROPIC_MODEL": "custom-model",
@@ -100,7 +135,11 @@ def test_settings_read_environment_values() -> None:
             "SLACK_VAULT_LOG_PATH": "~/logs/slack-vault.log",
             "SLACK_VAULT_LOG_LEVEL": "debug",
             "SLACK_VAULT_LOG_BACKUP_COUNT": "7",
+            "SLACK_VAULT_OPERATIONAL_DB_PATH": "~/state/slack-vault.sqlite3",
             "SLACK_VAULT_AUTOMATIC_INGEST_DELAY_SECONDS": "2.5",
+            "SLACK_VAULT_SLACK_INGEST_ENHANCE": "1",
+            "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE": "off",
+            "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT": "false",
         }
     )
 
@@ -112,7 +151,13 @@ def test_settings_read_environment_values() -> None:
     assert settings.slack.bot_token == "xoxb-abc"
     assert settings.slack.app_token == "xapp-def"
     assert settings.slack.signing_secret == "secret"
+    assert settings.slack.event_delivery_mode is SlackEventDeliveryMode.HTTP
+    assert settings.slack.enterprise_id == "E123"
+    assert settings.slack.team_id == "T123"
     assert settings.slack.ingestion_channel_id == "C123"
+    assert settings.slack.ingestion_channel_name == "slack-vault-dev-ingest"
+    assert settings.slack.ingestion_channel_is_private is True
+    assert settings.slack.allow_external_shared_channels is True
     assert settings.ai.anthropic_api_key == "sk-ant-test-value"
     assert settings.ai.model == "custom-model"
     assert settings.ai.max_input_tokens == 123
@@ -124,7 +169,13 @@ def test_settings_read_environment_values() -> None:
     assert settings.logging.path == Path("~/logs/slack-vault.log").expanduser()
     assert settings.logging.level == "DEBUG"
     assert settings.logging.backup_count == 7
+    assert (
+        settings.operational.db_path == Path("~/state/slack-vault.sqlite3").expanduser()
+    )
     assert settings.ingestion.automatic_ingest_delay_seconds == 2.5
+    assert settings.ingestion.slack_ingest_enhance is True
+    assert settings.ingestion.slack_ingest_synthesize is False
+    assert settings.ingestion.slack_ingest_git_commit is False
 
 
 def test_settings_load_dotenv_from_current_working_directory(
@@ -193,9 +244,17 @@ def test_settings_json_redacts_secrets() -> None:
     assert payload["slack"]["bot_token"] == "xoxb...oken"
     assert payload["slack"]["app_token"] == "xapp...oken"
     assert payload["slack"]["signing_secret"] == "sign...cret"
+    assert payload["slack"]["event_delivery_mode"] == "socket"
+    assert payload["slack"]["enterprise_id"] is None
+    assert payload["slack"]["team_id"] is None
+    assert payload["slack"]["allow_external_shared_channels"] is False
     assert payload["ai"]["anthropic_api_key"] == "sk-a...-key"
     assert payload["ai"]["retry"]["max_attempts"] == 3
     assert payload["logging"]["path"] == ".data/logs/slack-vault.log"
     assert payload["logging"]["level"] == "INFO"
+    assert payload["operational"]["db_path"] == ".data/slack-vault.sqlite3"
     assert payload["obsidian_cli_vault_name"] is None
     assert payload["ingestion"]["automatic_ingest_delay_seconds"] == 75.0
+    assert payload["ingestion"]["slack_ingest_enhance"] is False
+    assert payload["ingestion"]["slack_ingest_synthesize"] is True
+    assert payload["ingestion"]["slack_ingest_git_commit"] is True
