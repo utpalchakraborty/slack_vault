@@ -25,6 +25,8 @@ class VaultGitCommitResult:
     body: str
     paths: tuple[Path, ...]
     skipped_reason: str | None = None
+    pushed: bool = False
+    push_skipped_reason: str | None = None
 
 
 class VaultCommitter(Protocol):
@@ -48,6 +50,8 @@ class VaultCommitter(Protocol):
 @dataclass(frozen=True)
 class GitVaultCommitter:
     """Git-backed implementation of vault commit operations."""
+
+    push_after_commit: bool = False
 
     def ensure_clean_worktree(self, vault_path: Path) -> None:
         """Fail if the vault repository has pending changes."""
@@ -108,16 +112,30 @@ class GitVaultCommitter:
                 body=body,
                 paths=relative_paths,
                 skipped_reason="No staged vault changes.",
+                push_skipped_reason="No commit to push.",
             )
         if diff.returncode != 1:
             raise VaultGitError(diff.stderr.strip() or "Unable to inspect staged diff")
 
         _git(worktree, "commit", "-m", subject, "-m", body)
         commit_hash = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+        pushed = False
+        push_skipped_reason = None
+        if self.push_after_commit:
+            logger.info(
+                "Pushing vault ingest source_id=%s commit_hash=%s",
+                source_id,
+                commit_hash,
+            )
+            _git(worktree, "push")
+            pushed = True
+        else:
+            push_skipped_reason = "Push not requested."
         logger.info(
-            "Committed vault ingest source_id=%s commit_hash=%s",
+            "Committed vault ingest source_id=%s commit_hash=%s pushed=%s",
             source_id,
             commit_hash,
+            pushed,
         )
         return VaultGitCommitResult(
             committed=True,
@@ -125,6 +143,8 @@ class GitVaultCommitter:
             subject=subject,
             body=body,
             paths=relative_paths,
+            pushed=pushed,
+            push_skipped_reason=push_skipped_reason,
         )
 
 

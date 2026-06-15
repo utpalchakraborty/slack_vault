@@ -17,6 +17,7 @@ def test_slack_setup_check_passes_with_expected_mocked_clients() -> None:
         _settings(),
         bot_client=_FakeSetupBotClient(),
         app_client=_FakeSetupAppClient(),
+        config_client=_FakeSetupConfigClient(),
     )
 
     assert result.ok is True
@@ -25,6 +26,9 @@ def test_slack_setup_check_passes_with_expected_mocked_clients() -> None:
     assert "PASS: bot auth.test - team=T123 user=U123" in rendered
     assert "PASS: files.info scope - file_not_found" in rendered
     assert "PASS: app token apps.connections.open - websocket url returned" in rendered
+    assert "PASS: app manifest Socket Mode" in rendered
+    assert "PASS: app manifest bot events" in rendered
+    assert "PASS: app manifest bot scopes" in rendered
 
 
 def test_slack_setup_check_reports_missing_channel_scope() -> None:
@@ -32,6 +36,7 @@ def test_slack_setup_check_reports_missing_channel_scope() -> None:
         _settings(),
         bot_client=_FakeSetupBotClient(conversations_info_error="missing_scope"),
         app_client=_FakeSetupAppClient(),
+        config_client=_FakeSetupConfigClient(),
     )
 
     assert result.ok is False
@@ -39,6 +44,42 @@ def test_slack_setup_check_reports_missing_channel_scope() -> None:
     assert "FAIL: channel conversations.info" in rendered
     assert "needed=channels:read,groups:read,mpim:read,im:read" in rendered
     assert "provided=assistant:write" in rendered
+
+
+def test_slack_setup_check_reports_missing_app_manifest_events() -> None:
+    result = run_slack_setup_check(
+        _settings(),
+        bot_client=_FakeSetupBotClient(),
+        app_client=_FakeSetupAppClient(),
+        config_client=_FakeSetupConfigClient(bot_events=["file_shared"]),
+    )
+
+    assert result.ok is False
+    rendered = render_slack_setup_check(result)
+    assert "FAIL: app manifest bot events" in rendered
+    assert "missing=message.channels" in rendered
+
+
+def test_slack_setup_check_reports_missing_app_manifest_credentials() -> None:
+    result = run_slack_setup_check(
+        Settings.from_env(
+            {
+                "SLACK_BOT_TOKEN": "xoxb-token",
+                "SLACK_APP_TOKEN": "xapp-token",
+                "SLACK_SIGNING_SECRET": "secret",
+                "SLACK_VAULT_TEAM_ID": "T123",
+                "SLACK_VAULT_INGESTION_CHANNEL_ID": "C123",
+                "SLACK_VAULT_INGESTION_CHANNEL_NAME": "slack-vault-dev-ingest",
+            }
+        ),
+        bot_client=_FakeSetupBotClient(),
+        app_client=_FakeSetupAppClient(),
+    )
+
+    assert result.ok is False
+    rendered = render_slack_setup_check(result)
+    assert "FAIL: SLACK_VAULT_APP_ID configured" in rendered
+    assert "FAIL: SLACK_APP_CONFIG_TOKEN configured" in rendered
 
 
 def test_slack_setup_check_reports_missing_config_without_network_clients() -> None:
@@ -57,10 +98,13 @@ def _settings() -> Settings:
         {
             "SLACK_BOT_TOKEN": "xoxb-token",
             "SLACK_APP_TOKEN": "xapp-token",
+            "SLACK_VAULT_APP_ID": "A123",
+            "SLACK_APP_CONFIG_TOKEN": "xoxe-config-token",
             "SLACK_SIGNING_SECRET": "secret",
             "SLACK_VAULT_TEAM_ID": "T123",
             "SLACK_VAULT_INGESTION_CHANNEL_ID": "C123",
             "SLACK_VAULT_INGESTION_CHANNEL_NAME": "slack-vault-dev-ingest",
+            "SLACK_VAULT_INGESTION_CHANNEL_IS_PRIVATE": "false",
         }
     )
 
@@ -105,6 +149,34 @@ class _FakeSetupAppClient:
     def apps_connections_open(self, **kwargs: object) -> dict[str, object]:
         assert kwargs == {"app_token": "xapp-token"}
         return {"ok": True, "url": "wss://wss-primary.slack.com/link"}
+
+
+class _FakeSetupConfigClient:
+    def __init__(self, *, bot_events: list[str] | None = None) -> None:
+        self.bot_events = bot_events or ["file_shared", "message.channels"]
+
+    def apps_manifest_export(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs == {"app_id": "A123"}
+        return {
+            "ok": True,
+            "manifest": {
+                "display_information": {"name": "Slack Vault Dev"},
+                "oauth_config": {
+                    "scopes": {
+                        "bot": [
+                            "chat:write",
+                            "files:read",
+                            "channels:read",
+                            "channels:history",
+                        ]
+                    }
+                },
+                "settings": {
+                    "event_subscriptions": {"bot_events": self.bot_events},
+                    "socket_mode_enabled": True,
+                },
+            },
+        }
 
 
 def _slack_error(error: str, **data: object) -> SlackApiError:

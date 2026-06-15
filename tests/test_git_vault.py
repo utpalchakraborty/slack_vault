@@ -49,6 +49,8 @@ def test_git_vault_committer_creates_commit_for_generated_paths(
 
     assert result.committed is True
     assert result.commit_hash is not None
+    assert result.pushed is False
+    assert result.push_skipped_reason == "Push not requested."
     assert result.paths == (
         Path("20 Sources/sources/source-test.md"),
         Path("10 Knowledge/example.md"),
@@ -63,6 +65,32 @@ def test_git_vault_committer_creates_commit_for_generated_paths(
         "10 Knowledge/example.md",
         "20 Sources/sources/source-test.md",
     ]
+
+
+def test_git_vault_committer_pushes_when_requested(tmp_path: Path) -> None:
+    vault_path = tmp_path / "vault"
+    remote_path = tmp_path / "remote.git"
+    _init_git_repo(vault_path)
+    _run_git(vault_path, "branch", "-M", "main")
+    _run_git(vault_path, "commit", "--allow-empty", "-m", "Initialize vault")
+    _run_git(remote_path.parent, "init", "--bare", str(remote_path))
+    _run_git(vault_path, "remote", "add", "origin", str(remote_path))
+    _run_git(vault_path, "push", "-u", "origin", "main")
+    source_record = vault_path / "20 Sources/sources/source-test.md"
+    source_record.parent.mkdir(parents=True)
+    source_record.write_text("# Source\n", encoding="utf-8")
+
+    result = GitVaultCommitter(push_after_commit=True).commit_ingest(
+        vault_path,
+        source_id="source-test",
+        source_filename="Example.docx",
+        source_record_path=source_record,
+    )
+
+    assert result.committed is True
+    assert result.pushed is True
+    assert result.push_skipped_reason is None
+    assert _git_dir(remote_path, "log", "-1", "--pretty=%s") == "Ingest source-test"
 
 
 def test_git_vault_committer_skips_when_paths_have_no_changes(
@@ -91,6 +119,8 @@ def test_git_vault_committer_skips_when_paths_have_no_changes(
     assert first.committed is True
     assert second.committed is False
     assert second.skipped_reason == "No staged vault changes."
+    assert second.pushed is False
+    assert second.push_skipped_reason == "No commit to push."
     assert _git(vault_path, "rev-list", "--count", "HEAD") == "1"
 
 
@@ -134,9 +164,22 @@ def _git(path: Path, *args: str) -> str:
     return _run_git(path, *args).stdout.strip()
 
 
+def _git_dir(path: Path, *args: str) -> str:
+    return _run_git_dir(path, *args).stdout.strip()
+
+
 def _run_git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ("git", "-C", str(path), *args),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _run_git_dir(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ("git", f"--git-dir={path}", *args),
         check=True,
         capture_output=True,
         text=True,

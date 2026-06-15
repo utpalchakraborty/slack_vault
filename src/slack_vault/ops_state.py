@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 from slack_vault.archive import format_datetime
 from slack_vault.slack_events import SlackIngestionEvent
@@ -189,6 +190,24 @@ class SQLiteOperationalState:
         timestamp = _timestamp(created_at)
         job_id = _job_id(event.dedupe_key)
         with self._connection() as connection:
+            existing_file_job = _find_existing_file_job(
+                connection,
+                enterprise_id=event.enterprise_id,
+                team_id=event.team_id,
+                channel_id=event.channel_id,
+                file_id=event.file_id,
+                statuses=(
+                    IngestionJobStatus.QUEUED,
+                    IngestionJobStatus.RUNNING,
+                    IngestionJobStatus.SUCCEEDED,
+                ),
+            )
+            if existing_file_job is not None:
+                return EnqueueJobResult(
+                    job=_job_from_row(existing_file_job),
+                    created=False,
+                )
+
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO ingestion_jobs (
@@ -247,33 +266,56 @@ class SQLiteOperationalState:
         self.initialize()
         timestamp = _timestamp(started_at)
         with self._connection() as connection:
-            row = connection.execute(
-                _SELECT_JOB_SQL + " WHERE status = ? ORDER BY created_at LIMIT 1",
-                (IngestionJobStatus.QUEUED.value,),
-            ).fetchone()
-            if row is None:
-                return None
+            while True:
+                row = connection.execute(
+                    _SELECT_JOB_SQL + " WHERE status = ? ORDER BY created_at LIMIT 1",
+                    (IngestionJobStatus.QUEUED.value,),
+                ).fetchone()
+                if row is None:
+                    return None
 
-            job = _job_from_row(row)
-            cursor = connection.execute(
-                """
-                UPDATE ingestion_jobs
-                SET status = ?, started_at = ?
-                WHERE job_id = ? AND status = ?
-                """,
-                (
-                    IngestionJobStatus.RUNNING.value,
-                    timestamp,
-                    job.job_id,
-                    IngestionJobStatus.QUEUED.value,
-                ),
-            )
-            if cursor.rowcount != 1:
-                return None
-            claimed = connection.execute(
-                _SELECT_JOB_SQL + " WHERE job_id = ?",
-                (job.job_id,),
-            ).fetchone()
+                job = _job_from_row(row)
+                duplicate = _find_existing_file_job(
+                    connection,
+                    enterprise_id=job.enterprise_id,
+                    team_id=job.team_id,
+                    channel_id=job.channel_id,
+                    file_id=job.file_id,
+                    statuses=(
+                        IngestionJobStatus.RUNNING,
+                        IngestionJobStatus.SUCCEEDED,
+                    ),
+                    exclude_job_id=job.job_id,
+                )
+                if duplicate is not None:
+                    _mark_job_ignored_as_duplicate(
+                        connection,
+                        job_id=job.job_id,
+                        duplicate_job_id=str(duplicate["job_id"]),
+                        finished_at=timestamp,
+                    )
+                    continue
+
+                cursor = connection.execute(
+                    """
+                    UPDATE ingestion_jobs
+                    SET status = ?, started_at = ?
+                    WHERE job_id = ? AND status = ?
+                    """,
+                    (
+                        IngestionJobStatus.RUNNING.value,
+                        timestamp,
+                        job.job_id,
+                        IngestionJobStatus.QUEUED.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return None
+                claimed = connection.execute(
+                    _SELECT_JOB_SQL + " WHERE job_id = ?",
+                    (job.job_id,),
+                ).fetchone()
+                break
 
         if claimed is None:
             raise RuntimeError(f"Claimed job disappeared: {job.job_id}")
@@ -442,6 +484,75 @@ SELECT
     finished_at
 FROM ingestion_jobs
 """
+
+
+def _find_existing_file_job(
+    connection: sqlite3.Connection,
+    *,
+    enterprise_id: str | None,
+    team_id: str | None,
+    channel_id: str,
+    file_id: str,
+    statuses: tuple[IngestionJobStatus, ...],
+    exclude_job_id: str | None = None,
+) -> sqlite3.Row | None:
+    if not statuses:
+        return None
+    status_placeholders = ",".join("?" for _status in statuses)
+    exclude_clause = "" if exclude_job_id is None else "AND job_id != ?"
+    params: list[str] = [
+        enterprise_id or "",
+        team_id or "",
+        channel_id,
+        file_id,
+        *(status.value for status in statuses),
+    ]
+    if exclude_job_id is not None:
+        params.append(exclude_job_id)
+    return cast(
+        sqlite3.Row | None,
+        connection.execute(
+            _SELECT_JOB_SQL
+            + f"""
+            WHERE COALESCE(enterprise_id, '') = ?
+              AND COALESCE(team_id, '') = ?
+              AND channel_id = ?
+              AND file_id = ?
+              AND status IN ({status_placeholders})
+              {exclude_clause}
+            ORDER BY created_at, job_id
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone(),
+    )
+
+
+def _mark_job_ignored_as_duplicate(
+    connection: sqlite3.Connection,
+    *,
+    job_id: str,
+    duplicate_job_id: str,
+    finished_at: str,
+) -> None:
+    connection.execute(
+        """
+        UPDATE ingestion_jobs
+        SET status = ?,
+            error_stage = ?,
+            error_message = ?,
+            finished_at = ?
+        WHERE job_id = ? AND status = ?
+        """,
+        (
+            IngestionJobStatus.IGNORED.value,
+            "duplicate_slack_file",
+            f"Duplicate Slack file event for job {duplicate_job_id}",
+            finished_at,
+            job_id,
+            IngestionJobStatus.QUEUED.value,
+        ),
+    )
 
 
 def _job_from_row(row: sqlite3.Row) -> IngestionJob:

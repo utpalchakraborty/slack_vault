@@ -10,7 +10,7 @@ from slack_vault.archive import ArchivedSourceRef, SourceIngestMetadata
 from slack_vault.config import ArchiveProviderKind, Settings
 from slack_vault.evidence_store import EvidenceArtifactWriteResult
 from slack_vault.extraction import ExtractionResult
-from slack_vault.git_vault import VaultGitCommitResult
+from slack_vault.git_vault import GitVaultCommitter, VaultGitCommitResult
 from slack_vault.ingest import IngestProcessingError, LocalFileIngestResult
 from slack_vault.ops_state import IngestionJobStatus, SQLiteOperationalState
 from slack_vault.slack_files import SlackFileInfo
@@ -35,6 +35,25 @@ def test_slack_ingestion_service_enqueues_once_for_duplicate_payload(
     assert first[0].created is True
     assert len(second) == 1
     assert second[0].created is False
+    assert len(service.state.list_jobs()) == 1
+    assert [message["text"] for message in client.messages] == [
+        "Queued Slack Vault ingestion for `F123`."
+    ]
+
+
+def test_slack_ingestion_service_enqueues_once_for_file_shared_and_message(
+    tmp_path: Path,
+) -> None:
+    service, client, _ingest = _service(tmp_path)
+
+    file_shared = service.handle_event_payload(_file_shared_payload())
+    message = service.handle_event_payload(_message_payload())
+
+    assert len(file_shared) == 1
+    assert file_shared[0].created is True
+    assert len(message) == 1
+    assert message[0].created is False
+    assert message[0].job.job_id == file_shared[0].job.job_id
     assert len(service.state.list_jobs()) == 1
     assert [message["text"] for message in client.messages] == [
         "Queued Slack Vault ingestion for `F123`."
@@ -139,6 +158,7 @@ def test_default_slack_ingest_dependencies_respect_runtime_flags(
             "SLACK_VAULT_SLACK_INGEST_ENHANCE": "true",
             "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE": "true",
             "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT": "true",
+            "SLACK_VAULT_SLACK_INGEST_GIT_PUSH": "true",
         }
     )
     enabled_dependencies = default_slack_ingest_dependencies(enabled)
@@ -146,6 +166,21 @@ def test_default_slack_ingest_dependencies_respect_runtime_flags(
     assert enabled_dependencies.evidence_enhancer is not None
     assert enabled_dependencies.knowledge_synthesizer is not None
     assert enabled_dependencies.vault_committer is not None
+    assert isinstance(enabled_dependencies.vault_committer, GitVaultCommitter)
+    assert enabled_dependencies.vault_committer.push_after_commit is True
+
+    push_disabled = Settings.from_env(
+        {
+            "SLACK_VAULT_OBSIDIAN_PATH": str(tmp_path / "push-disabled-vault"),
+            "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE": "false",
+            "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT": "true",
+            "SLACK_VAULT_SLACK_INGEST_GIT_PUSH": "false",
+        }
+    )
+    push_disabled_dependencies = default_slack_ingest_dependencies(push_disabled)
+
+    assert isinstance(push_disabled_dependencies.vault_committer, GitVaultCommitter)
+    assert push_disabled_dependencies.vault_committer.push_after_commit is False
 
 
 def test_slack_ingestion_service_requires_ingestion_channel(
@@ -214,6 +249,23 @@ def _message_payload() -> dict[str, object]:
             "ts": "1718300000.000100",
             "event_ts": "1718300000.000200",
             "files": [{"id": "F123"}],
+        },
+    }
+
+
+def _file_shared_payload() -> dict[str, object]:
+    return {
+        "type": "event_callback",
+        "team_id": "T123",
+        "context_team_id": "TCTX",
+        "context_enterprise_id": "E123",
+        "event_id": "Ev-file-shared",
+        "event": {
+            "type": "file_shared",
+            "channel_id": "C123",
+            "user_id": "W123",
+            "file_id": "F123",
+            "event_ts": "1718300000.000100",
         },
     }
 

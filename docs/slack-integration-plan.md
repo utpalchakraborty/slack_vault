@@ -16,7 +16,8 @@ pipeline:
 5. Archive the original file through the configured archive provider.
 6. Extract evidence, optionally enhance it, synthesize a knowledge note, write a
    source record, and commit the vault changes.
-7. Reply in the Slack thread with success or failure status.
+7. Push committed vault changes upstream when Git push mode is enabled.
+8. Reply in the Slack thread with success or failure status.
 
 Slack Q&A remains Phase 7. Vector retrieval, broad multi-workspace routing,
 production deployment, Enterprise Search, Audit Logs, and admin automation are
@@ -24,16 +25,28 @@ not required for Phase 6.
 
 ## Current Status
 
-Status as of 2026-06-14:
+Status as of 2026-06-15:
 
 - The unit-testable Phase 6 ingestion slice is implemented locally.
 - Live Slack setup preflight passes against the configured development app and
-  `#slack-vault-dev-ingest` channel. The bot token authenticates, the configured
-  team matches, the bot is in the channel, channel history access works,
-  `files.info` scope is available, and the app token can open a Socket Mode
-  connection.
-- No live file-ingestion smoke test has been run yet. That remains the next
-  Phase 6 validation step.
+  `#slack-vault-dev-ingest` channel when both runtime credentials and setup-time
+  app manifest credentials are present. The bot token authenticates, the
+  configured team matches, the bot is in the channel, channel history access
+  works, `files.info` scope is available, the app token can open a Socket Mode
+  connection, and the exported app manifest includes the required Socket Mode,
+  bot event, and bot scope configuration.
+- The first live Slack file-ingestion smoke test passed against
+  `#slack-vault-dev-ingest`: uploading `sample_company_filings_status.md`
+  queued ingestion, the worker downloaded the Slack file, archived it, extracted
+  six Markdown evidence blocks, synthesized a knowledge note, wrote a source
+  record, created vault commit `7a08768 Ingest source-2026-06-15-32f0716c1e53`,
+  and posted the Slack result. That live smoke commit was initially created
+  locally; Slack ingestion now pushes successful vault commits upstream by
+  default.
+- The first live smoke test showed Slack can emit both `file_shared` and
+  `message` events for the same uploaded file with different message timestamps.
+  Queue idempotency now collapses those events by Slack file identity and ignores
+  legacy queued duplicates after a matching job succeeds.
 - The implementation uses Socket Mode for local development through
   `slack-vault run-slack` / `make run-slack`.
 - Slack setup can be checked before running the listener with
@@ -46,14 +59,15 @@ Status as of 2026-06-14:
 - Temporary Slack downloads default to `.data/slack-downloads/`, derived from
   the operational database parent directory.
 - The worker can run the same archive, extraction, optional enhancement,
-  optional synthesis, source-record, and optional Git-commit pipeline used by
-  local file ingestion.
+  optional synthesis, source-record, optional Git-commit, and optional Git-push
+  pipeline used by local file ingestion.
 - Current automated validation passes with no external services configured:
-  `make check` reports `146 passed, 2 skipped` with `90.43%` coverage.
+  `make check` reports `152 passed, 2 skipped` with `90.21%` coverage.
 - Current live setup validation passes with configured Slack credentials:
   `make check-slack-setup`.
-- Remaining Phase 6 work is live Slack smoke testing, plus any small adjustments
-  discovered from real Events API payloads and Slack file download behavior.
+- Remaining Phase 6 work is a POC smoke test with an approved DOCX or PDF, plus
+  any small adjustments discovered from broader real Events API payloads and
+  Slack file download behavior.
 
 ## Implemented Code Baseline
 
@@ -61,7 +75,8 @@ The first unit-testable Slack adapter slice is implemented:
 
 - `slack-bolt` is already a project dependency.
 - `Settings.slack` reads `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
-  `SLACK_SIGNING_SECRET`, and `SLACK_VAULT_INGESTION_CHANNEL_ID`.
+  `SLACK_VAULT_APP_ID`, `SLACK_APP_CONFIG_TOKEN`, `SLACK_SIGNING_SECRET`, and
+  `SLACK_VAULT_INGESTION_CHANNEL_ID`.
 - `Settings.slack` also reads Enterprise ID, team ID, ingestion channel
   ID/name/privacy, event delivery mode, and external shared-channel policy.
 - `SourceIngestMetadata` and `ArchivedSourceRef` include Slack workspace/team,
@@ -316,9 +331,10 @@ Use SQLite for Phase 6. Implemented tables:
 Idempotency should happen before download:
 
 - `slack_events.event_id` prevents Slack retry duplicates.
-- A unique job key on `(team_id, channel_id, message_ts, file_id)` prevents the
-  same uploaded file from being ingested twice if Slack emits both `message` and
-  `file_shared` events.
+- Job enqueue idempotency on Slack file identity
+  `(enterprise_id, team_id, channel_id, file_id)` prevents the same uploaded file
+  from being ingested twice when Slack emits both `message` and `file_shared`
+  events with different message timestamps.
 - Content-hash archive idempotency remains useful, but it is not enough for
   Slack event idempotency because a duplicate event should also avoid duplicate
   replies and duplicate jobs.
@@ -384,6 +400,8 @@ the local `.env`; do not paste tokens into chat:
 ```text
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
+SLACK_VAULT_APP_ID=A...
+SLACK_APP_CONFIG_TOKEN=xoxe-...
 SLACK_SIGNING_SECRET=...
 SLACK_VAULT_SLACK_EVENT_DELIVERY_MODE=socket
 SLACK_VAULT_ENTERPRISE_ID=E...
@@ -399,10 +417,12 @@ SLACK_VAULT_OPERATIONAL_DB_PATH=.data/slack-vault.sqlite3
 SLACK_VAULT_SLACK_INGEST_ENHANCE=false
 SLACK_VAULT_SLACK_INGEST_SYNTHESIZE=true
 SLACK_VAULT_SLACK_INGEST_GIT_COMMIT=true
+SLACK_VAULT_SLACK_INGEST_GIT_PUSH=true
 ```
 
 Also provide:
 
+- the development Slack app ID and a setup-time app configuration token;
 - the development workspace/team ID;
 - the Enterprise org ID, if the dev app is org-ready;
 - whether the ingestion channel is public or private;
@@ -419,15 +439,18 @@ Recommended live-test levels:
 2. Setup preflight:
    `make check-slack-setup`. This validates configured Slack tokens, bot
    authentication, configured team match, channel lookup, channel membership,
-   channel history scope, `files.info` scope, and Socket Mode connection URL
-   creation without posting messages or ingesting a business document.
+   channel history scope, `files.info` scope, Socket Mode connection URL
+   creation, and exported app manifest settings for Socket Mode, bot event
+   subscriptions, and bot scopes without posting messages or ingesting a
+   business document.
 3. A gated live Slack test, still to be added:
    `SLACK_VAULT_RUN_LIVE_SLACK_TESTS=1 uv run pytest tests/test_slack_live.py -q --no-cov`
    that validates token auth, channel access, and file metadata lookup without
    ingesting a business document.
 4. Manual smoke test: upload a small Markdown file to `#slack-vault-dev-ingest`
    and confirm archive, source record, knowledge note, Git commit, and Slack
-   result reply.
+   result reply. This passed on 2026-06-15 with
+   `sample_company_filings_status.md`.
 5. POC smoke test: upload one approved DOCX or PDF to `#slack-vault-poc-ingest`
    and verify the resulting vault note with a local `make ask` query before
    enabling Slack Q&A in Phase 7.

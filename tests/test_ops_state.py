@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -36,6 +37,78 @@ def test_sqlite_state_records_events_and_enqueues_idempotent_jobs(
     assert second_job.created is False
     assert second_job.job.job_id == first_job.job.job_id
     assert state.list_jobs() == (first_job.job,)
+
+
+def test_sqlite_state_collapses_message_and_file_shared_events_for_same_file(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteOperationalState(tmp_path / "state.sqlite3")
+    file_shared = _event(
+        event_id="Ev-file-shared",
+        event_type="file_shared",
+        event_ts="1718300000.000100",
+        message_ts="1718300000.000100",
+        thread_ts=None,
+    )
+    message = _event(
+        event_id="Ev-message",
+        event_type="message",
+        event_ts="1718300000.665019",
+        message_ts="1718300000.665019",
+        thread_ts="1718300000.665019",
+    )
+
+    first = state.enqueue_ingestion_job(file_shared)
+    second = state.enqueue_ingestion_job(message)
+
+    assert first.created is True
+    assert second.created is False
+    assert second.job.job_id == first.job.job_id
+    assert state.list_jobs() == (first.job,)
+
+
+def test_sqlite_state_ignores_legacy_queued_duplicate_after_success(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    state = SQLiteOperationalState(db_path)
+    state.initialize()
+    _insert_job(
+        db_path,
+        job_id="job-succeeded",
+        status=IngestionJobStatus.SUCCEEDED,
+        slack_event_id="Ev-file-shared",
+        dedupe_key="|T123|C123|1718300000.000100|F123",
+        event_ts="1718300000.000100",
+        message_ts="1718300000.000100",
+        thread_ts=None,
+        created_at="2026-06-14T12:00:00Z",
+        started_at="2026-06-14T12:01:00Z",
+        finished_at="2026-06-14T12:02:00Z",
+    )
+    _insert_job(
+        db_path,
+        job_id="job-duplicate",
+        status=IngestionJobStatus.QUEUED,
+        slack_event_id="Ev-message",
+        dedupe_key="|T123|C123|1718300000.665019|F123",
+        event_ts="1718300000.665019",
+        message_ts="1718300000.665019",
+        thread_ts="1718300000.665019",
+        created_at="2026-06-14T12:03:00Z",
+    )
+
+    claimed = state.claim_next_queued_job(
+        started_at=datetime(2026, 6, 14, 12, 4, tzinfo=UTC),
+    )
+    duplicate = state.get_job("job-duplicate")
+
+    assert claimed is None
+    assert duplicate is not None
+    assert duplicate.status is IngestionJobStatus.IGNORED
+    assert duplicate.error_stage == "duplicate_slack_file"
+    assert duplicate.error_message == "Duplicate Slack file event for job job-succeeded"
+    assert duplicate.finished_at == "2026-06-14T12:04:00Z"
 
 
 def test_sqlite_state_claims_and_marks_success(tmp_path: Path) -> None:
@@ -103,21 +176,88 @@ def test_sqlite_state_marks_failure(tmp_path: Path) -> None:
     assert failed.error_message == "not visible"
 
 
-def _event() -> SlackIngestionEvent:
+def _event(
+    *,
+    event_id: str = "Ev123",
+    event_type: str = "message",
+    event_ts: str = "1718300000.000200",
+    message_ts: str = "1718300000.000100",
+    thread_ts: str | None = "1718300000.000100",
+) -> SlackIngestionEvent:
     return SlackIngestionEvent(
-        event_id="Ev123",
-        event_type="message",
+        event_id=event_id,
+        event_type=event_type,
         enterprise_id="E123",
         team_id="T123",
         context_team_id="TCTX",
         is_enterprise_install=True,
         channel_id="C123",
         user_id="W123",
-        event_ts="1718300000.000200",
-        message_ts="1718300000.000100",
-        thread_ts="1718300000.000100",
+        event_ts=event_ts,
+        message_ts=message_ts,
+        thread_ts=thread_ts,
         file_id="F123",
         initial_comment="Please ingest this.",
         is_ext_shared_channel=False,
-        raw_payload={"event_id": "Ev123"},
+        raw_payload={"event_id": event_id},
     )
+
+
+def _insert_job(
+    db_path: Path,
+    *,
+    job_id: str,
+    status: IngestionJobStatus,
+    slack_event_id: str,
+    dedupe_key: str,
+    event_ts: str,
+    message_ts: str,
+    thread_ts: str | None,
+    created_at: str,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO ingestion_jobs (
+                job_id,
+                status,
+                slack_event_id,
+                dedupe_key,
+                enterprise_id,
+                team_id,
+                context_team_id,
+                channel_id,
+                user_id,
+                event_ts,
+                message_ts,
+                thread_ts,
+                file_id,
+                initial_comment,
+                created_at,
+                started_at,
+                finished_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                status.value,
+                slack_event_id,
+                dedupe_key,
+                "E123",
+                "T123",
+                "TCTX",
+                "C123",
+                "W123",
+                event_ts,
+                message_ts,
+                thread_ts,
+                "F123",
+                "Please ingest this.",
+                created_at,
+                started_at,
+                finished_at,
+            ),
+        )

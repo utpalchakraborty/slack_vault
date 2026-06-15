@@ -40,6 +40,13 @@ class SlackSetupAppClient(Protocol):
         """Return Slack apps.connections.open response."""
 
 
+class SlackSetupConfigClient(Protocol):
+    """Slack Web API methods used by setup checks with a config token."""
+
+    def apps_manifest_export(self, **kwargs: object) -> Mapping[str, object]:
+        """Return Slack apps.manifest.export response."""
+
+
 class AddCheck(Protocol):
     """Callable used internally to append a check result."""
 
@@ -79,6 +86,7 @@ def run_slack_setup_check(
     *,
     bot_client: SlackSetupBotClient | None = None,
     app_client: SlackSetupAppClient | None = None,
+    config_client: SlackSetupConfigClient | None = None,
 ) -> SlackSetupCheckResult:
     """Check that Slack settings and token permissions are usable."""
 
@@ -90,6 +98,12 @@ def run_slack_setup_check(
     slack = settings.slack
     add("SLACK_BOT_TOKEN configured", slack.bot_token is not None)
     add("SLACK_APP_TOKEN configured", slack.app_token is not None)
+    add("SLACK_VAULT_APP_ID configured", slack.app_id is not None, slack.app_id)
+    add(
+        "SLACK_APP_CONFIG_TOKEN configured",
+        slack.app_config_token is not None,
+        _redacted_token_detail(slack.app_config_token),
+    )
     add("SLACK_SIGNING_SECRET configured", slack.signing_secret is not None)
     add("SLACK_VAULT_TEAM_ID configured", slack.team_id is not None, slack.team_id)
     add(
@@ -122,6 +136,13 @@ def run_slack_setup_check(
     if slack.app_token is not None:
         app = app_client or cast(SlackSetupAppClient, WebClient())
         _check_socket_mode(add, app, slack.app_token)
+
+    if slack.app_id is not None and slack.app_config_token is not None:
+        config = config_client or cast(
+            SlackSetupConfigClient,
+            WebClient(token=slack.app_config_token),
+        )
+        _check_app_manifest(add, config, settings)
 
     return SlackSetupCheckResult(checks=tuple(checks))
 
@@ -270,6 +291,127 @@ def _check_socket_mode(
     add("app token apps.connections.open", bool(response.get("ok")) and has_url, detail)
 
 
+def _check_app_manifest(
+    add: AddCheck,
+    config: SlackSetupConfigClient,
+    settings: Settings,
+) -> None:
+    app_id = settings.slack.app_id
+    if app_id is None:
+        return
+
+    try:
+        response = config.apps_manifest_export(app_id=app_id)
+    except SlackApiError as exc:
+        add("app manifest export", False, _slack_error_detail(exc))
+        return
+    except Exception as exc:
+        add("app manifest export", False, _exception_detail(exc))
+        return
+
+    manifest = _mapping(response.get("manifest"))
+    if not bool(response.get("ok")) or manifest is None:
+        add("app manifest export", False, "missing manifest")
+        return
+
+    app_name = _manifest_app_name(manifest)
+    add("app manifest export", True, f"app={app_name or app_id}")
+    _check_manifest_socket_mode(add, manifest, settings)
+    _check_manifest_bot_events(add, manifest, settings)
+    _check_manifest_bot_scopes(add, manifest, settings)
+
+
+def _check_manifest_socket_mode(
+    add: AddCheck,
+    manifest: Mapping[str, object],
+    settings: Settings,
+) -> None:
+    manifest_settings = _mapping(manifest.get("settings"))
+    enabled = (
+        manifest_settings.get("socket_mode_enabled")
+        if manifest_settings is not None
+        else None
+    )
+    expected = settings.slack.event_delivery_mode.value == "socket"
+    add(
+        "app manifest Socket Mode",
+        enabled is expected,
+        f"socket_mode_enabled={enabled} expected={expected}",
+    )
+
+
+def _check_manifest_bot_events(
+    add: AddCheck,
+    manifest: Mapping[str, object],
+    settings: Settings,
+) -> None:
+    manifest_settings = _mapping(manifest.get("settings")) or {}
+    event_subscriptions = _mapping(manifest_settings.get("event_subscriptions")) or {}
+    bot_events = frozenset(_string_tuple(event_subscriptions.get("bot_events")))
+    required_events = _required_bot_events(settings)
+    missing = tuple(event for event in required_events if event not in bot_events)
+    add(
+        "app manifest bot events",
+        not missing,
+        _configured_detail(required_events, bot_events, missing),
+    )
+
+
+def _check_manifest_bot_scopes(
+    add: AddCheck,
+    manifest: Mapping[str, object],
+    settings: Settings,
+) -> None:
+    oauth_config = _mapping(manifest.get("oauth_config")) or {}
+    scopes = _mapping(oauth_config.get("scopes")) or {}
+    bot_scopes = frozenset(_string_tuple(scopes.get("bot")))
+    required_scopes = _required_bot_scopes(settings)
+    missing = tuple(scope for scope in required_scopes if scope not in bot_scopes)
+    add(
+        "app manifest bot scopes",
+        not missing,
+        _configured_detail(required_scopes, bot_scopes, missing),
+    )
+
+
+def _required_bot_events(settings: Settings) -> tuple[str, ...]:
+    if settings.slack.ingestion_channel_is_private is True:
+        return ("file_shared", "message.groups")
+    return ("file_shared", "message.channels")
+
+
+def _required_bot_scopes(settings: Settings) -> tuple[str, ...]:
+    required = ["chat:write", "files:read"]
+    if settings.slack.ingestion_channel_is_private is True:
+        required.extend(("groups:read", "groups:history"))
+    else:
+        required.extend(("channels:read", "channels:history"))
+    return tuple(required)
+
+
+def _configured_detail(
+    required: tuple[str, ...],
+    configured: frozenset[str],
+    missing: tuple[str, ...],
+) -> str:
+    required_text = ",".join(required)
+    configured_text = ",".join(sorted(configured)) or "none"
+    if missing:
+        missing_text = ",".join(missing)
+        return (
+            f"missing={missing_text} required={required_text} "
+            f"configured={configured_text}"
+        )
+    return f"required={required_text} configured={configured_text}"
+
+
+def _manifest_app_name(manifest: Mapping[str, object]) -> str | None:
+    display_information = _mapping(manifest.get("display_information"))
+    if display_information is None:
+        return None
+    return _optional_string(display_information.get("name"))
+
+
 def _slack_error(exc: SlackApiError) -> str:
     return str(exc.response.get("error"))
 
@@ -295,6 +437,20 @@ def _optional_string(value: object) -> str | None:
     if isinstance(value, str):
         return value
     return None
+
+
+def _redacted_token_detail(token: str | None) -> str | None:
+    if token is None:
+        return None
+    if len(token) <= 8:
+        return "<redacted>"
+    return f"{token[:4]}...{token[-4:]}"
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
 
 
 def _mapping(value: object) -> Mapping[str, object] | None:

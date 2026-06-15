@@ -22,6 +22,7 @@ DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS = 75.0
 DEFAULT_SLACK_INGEST_ENHANCE = False
 DEFAULT_SLACK_INGEST_SYNTHESIZE = True
 DEFAULT_SLACK_INGEST_GIT_COMMIT = True
+DEFAULT_SLACK_INGEST_GIT_PUSH = True
 DEFAULT_AI_RETRY_MAX_ATTEMPTS = 3
 DEFAULT_AI_RETRY_INITIAL_DELAY_SECONDS = 60.0
 DEFAULT_AI_RETRY_MAX_DELAY_SECONDS = 300.0
@@ -61,6 +62,8 @@ class SlackSettings:
 
     bot_token: str | None
     app_token: str | None
+    app_id: str | None
+    app_config_token: str | None
     signing_secret: str | None
     event_delivery_mode: SlackEventDeliveryMode
     enterprise_id: str | None
@@ -117,6 +120,7 @@ class IngestionSettings:
     slack_ingest_enhance: bool
     slack_ingest_synthesize: bool
     slack_ingest_git_commit: bool
+    slack_ingest_git_push: bool
 
 
 @dataclass(frozen=True)
@@ -169,6 +173,8 @@ class Settings:
             slack=SlackSettings(
                 bot_token=_blank_to_none(values.get("SLACK_BOT_TOKEN")),
                 app_token=_blank_to_none(values.get("SLACK_APP_TOKEN")),
+                app_id=_blank_to_none(values.get("SLACK_VAULT_APP_ID")),
+                app_config_token=_blank_to_none(values.get("SLACK_APP_CONFIG_TOKEN")),
                 signing_secret=_blank_to_none(values.get("SLACK_SIGNING_SECRET")),
                 event_delivery_mode=SlackEventDeliveryMode(
                     values.get(
@@ -277,6 +283,11 @@ class Settings:
                     "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT",
                     DEFAULT_SLACK_INGEST_GIT_COMMIT,
                 ),
+                slack_ingest_git_push=_bool_value(
+                    values,
+                    "SLACK_VAULT_SLACK_INGEST_GIT_PUSH",
+                    DEFAULT_SLACK_INGEST_GIT_PUSH,
+                ),
             ),
         )
 
@@ -292,6 +303,8 @@ class Settings:
             "slack": {
                 "bot_token": _redact(self.slack.bot_token),
                 "app_token": _redact(self.slack.app_token),
+                "app_id": self.slack.app_id,
+                "app_config_token": _redact(self.slack.app_config_token),
                 "signing_secret": _redact(self.slack.signing_secret),
                 "event_delivery_mode": self.slack.event_delivery_mode.value,
                 "enterprise_id": self.slack.enterprise_id,
@@ -333,6 +346,7 @@ class Settings:
                 "slack_ingest_enhance": self.ingestion.slack_ingest_enhance,
                 "slack_ingest_synthesize": self.ingestion.slack_ingest_synthesize,
                 "slack_ingest_git_commit": self.ingestion.slack_ingest_git_commit,
+                "slack_ingest_git_push": self.ingestion.slack_ingest_git_push,
             },
         }
         return json.dumps(data, indent=2, sort_keys=True)

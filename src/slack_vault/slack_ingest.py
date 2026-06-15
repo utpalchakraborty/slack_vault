@@ -274,7 +274,11 @@ def default_slack_ingest_dependencies(settings: Settings) -> SlackIngestDependen
             raise ValueError("AI provider is required for Slack knowledge synthesis")
         knowledge_synthesizer = AnthropicKnowledgeSynthesizer(ai_provider)
     vault_committer: VaultCommitter | None = (
-        GitVaultCommitter() if settings.ingestion.slack_ingest_git_commit else None
+        GitVaultCommitter(
+            push_after_commit=settings.ingestion.slack_ingest_git_push,
+        )
+        if settings.ingestion.slack_ingest_git_commit
+        else None
     )
     return SlackIngestDependencies(
         evidence_enhancer=evidence_enhancer,
@@ -346,6 +350,12 @@ def _success_message(
         lines.append("Vault Git commit: not requested")
     elif result.git_commit.committed:
         lines.append(f"Vault Git commit: `{result.git_commit.commit_hash}`")
+        if result.git_commit.pushed:
+            lines.append("Vault Git push: pushed")
+        else:
+            lines.append(
+                f"Vault Git push: not pushed ({result.git_commit.push_skipped_reason})"
+            )
     else:
         lines.append(f"Vault Git commit: skipped ({result.git_commit.skipped_reason})")
     return "\n".join(lines)

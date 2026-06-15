@@ -128,7 +128,21 @@ The default is 75 seconds so later Slack batch ingestion does not immediately
 hit token-per-minute limits after processing a large document.
 
 To run the Phase 6 Slack ingestion POC locally, configure the Slack values in
-`.env`, then verify credentials, channel access, and Socket Mode readiness:
+`.env`, then verify credentials, channel access, app manifest settings, and
+Socket Mode readiness:
+
+- `SLACK_BOT_TOKEN`
+- `SLACK_APP_TOKEN`
+- `SLACK_VAULT_APP_ID`
+- `SLACK_APP_CONFIG_TOKEN`
+- `SLACK_SIGNING_SECRET`
+- `SLACK_VAULT_TEAM_ID`
+- `SLACK_VAULT_INGESTION_CHANNEL_ID`
+- `SLACK_VAULT_INGESTION_CHANNEL_NAME`
+
+`SLACK_APP_CONFIG_TOKEN` is used only by `check-slack-setup` to export the app
+manifest and verify Socket Mode, bot event subscriptions, and configured bot
+scopes. It is not used by the listener or ingestion worker.
 
 ```sh
 make check-slack-setup
@@ -156,7 +170,10 @@ The listener records Slack events and queues jobs in
 `SLACK_VAULT_OPERATIONAL_DB_PATH`. The worker downloads Slack files to local
 temporary storage outside Git, then runs the same archive, extraction, optional
 enhancement, optional synthesis, source-record, and Git-commit pipeline used by
-local file ingest.
+local file ingest. Slack ingestion also pushes successful vault Git commits to
+the configured upstream by default so other Obsidian vault clones can pull the
+new notes. Set `SLACK_VAULT_SLACK_INGEST_GIT_PUSH=false` to keep Slack-ingested
+vault commits local during development.
 
 ## Development Checks
 
