@@ -65,12 +65,17 @@ Status as of 2026-06-15:
   optional synthesis, source-record, optional Git-commit, and optional Git-push
   pipeline used by local file ingestion.
 - Current automated validation passes with no external services configured:
-  `make check` reports `152 passed, 2 skipped` with `90.21%` coverage.
+  `make check` reports `155 passed, 2 skipped` with `90.27%` coverage.
 - Current live setup validation passes with configured Slack credentials:
   `make check-slack-setup`.
-- Remaining Phase 6 work is a POC smoke test with an approved DOCX or PDF, plus
-  any small adjustments discovered from broader real Events API payloads and
-  Slack file download behavior.
+- The next planned smoke test is deferred to 2026-06-16: upload a new document
+  to `#slack-vault-dev-ingest` while `make run-slack` is running and verify the
+  event-triggered worker launches, ingests the file, commits the generated vault
+  changes, and pushes that vault commit upstream.
+- Remaining Phase 6 work is the deferred event-triggered dev-channel smoke
+  test, a POC smoke test with an approved DOCX or PDF, plus any small
+  adjustments discovered from broader real Events API payloads and Slack file
+  download behavior.
 
 ## Implemented Code Baseline
 
@@ -456,7 +461,19 @@ Recommended live-test levels:
    and confirm archive, source record, knowledge note, Git commit, and Slack
    result reply. This passed on 2026-06-15 with
    `sample_company_filings_status.md`.
-5. POC smoke test: upload one approved DOCX or PDF to `#slack-vault-poc-ingest`
+5. Event-triggered worker smoke test, planned for 2026-06-16:
+   - Start `make run-slack` from `/Users/utpalrohan/code/slack_vault`.
+   - Upload a new sanitized document to `#slack-vault-dev-ingest`.
+   - Confirm the bot posts the queued reply without manually running
+     `make slack-worker`.
+   - Confirm `make run-slack` starts a background `make slack-worker ONCE=1`
+     process only for the newly queued job.
+   - Confirm the worker downloads the Slack file, archives it, extracts evidence,
+     writes the source record and knowledge note, commits the vault, posts the
+     final Slack result, and pushes the new vault commit upstream.
+   - Confirm duplicate Slack events for the same file do not create or process a
+     second job.
+6. POC smoke test: upload one approved DOCX or PDF to `#slack-vault-poc-ingest`
    and verify the resulting vault note with a local `make ask` query before
    enabling Slack Q&A in Phase 7.
 
