@@ -148,19 +148,22 @@ scopes. It is not used by the listener or ingestion worker.
 make check-slack-setup
 ```
 
-If the setup check passes, start the Socket Mode listener:
+If the setup check passes, start the Socket Mode listener. The listener records
+new Slack upload events and starts one background `make slack-worker ONCE=1`
+process whenever a new ingestion job is queued:
 
 ```sh
 make run-slack
 ```
 
-In another terminal, process queued Slack ingestion jobs:
+For manual recovery or debugging, process any currently queued Slack ingestion
+jobs:
 
 ```sh
 make slack-worker
 ```
 
-For a single job attempt during development, use:
+For a single manual job attempt during development, use:
 
 ```sh
 make slack-worker ONCE=1

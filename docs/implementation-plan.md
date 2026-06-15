@@ -182,7 +182,9 @@ Status as of 2026-06-15:
     event subscriptions, and bot scopes;
   - Socket Mode app wiring through `slack-vault run-slack` and
     `make run-slack`;
-  - queued-job processing through `slack-vault slack-worker` and
+  - event-triggered one-shot worker launch from `make run-slack` after each
+    newly queued Slack ingestion job;
+  - manual queued-job processing through `slack-vault slack-worker` and
     `make slack-worker`;
   - Slack Enterprise Grid metadata propagation into archive/source records;
   - reusable `ingest_file_path(...)` so Slack-downloaded temporary files use the
@@ -775,10 +777,11 @@ Implemented entrypoints:
   scope, `files.info` scope, Socket Mode readiness, and exported app manifest
   settings without posting messages.
 - `slack-vault run-slack` / `make run-slack` starts the Slack Bolt Socket Mode
-  listener and queues ingestion jobs.
+  listener, queues ingestion jobs, and starts one background
+  `make slack-worker ONCE=1` process when a Slack event creates a new job.
 - `slack-vault slack-worker --once` processes at most one queued job.
 - `slack-vault slack-worker` processes queued jobs until the SQLite queue is
-  empty.
+  empty for manual recovery or debugging.
 
 Implemented code modules:
 

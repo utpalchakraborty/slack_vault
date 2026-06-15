@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -45,6 +47,84 @@ def test_create_bolt_app_registers_handlers_and_logs_failures(
     service.fail = True
     app.handlers["file_shared"]({"event": {"type": "file_shared"}}, logger)
     assert logger.exceptions == ["Failed to handle Slack file_shared event"]
+
+
+def test_create_bolt_app_spawns_worker_for_created_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slack_app, "import_module", _fake_import_module)
+    service = _FakeSlackIngestionService()
+    service.results = (
+        _FakeEnqueueJobResult(created=True),
+        _FakeEnqueueJobResult(created=False),
+        _FakeEnqueueJobResult(created=True),
+    )
+    monkeypatch.setattr(
+        slack_app,
+        "build_slack_ingestion_service",
+        lambda settings, *, slack_client: service,
+    )
+    spawns: list[int] = []
+
+    app = cast(
+        _FakeBoltApp,
+        slack_app.create_bolt_app(
+            _settings(),
+            worker_spawner=spawns.append,
+        ),
+    )
+
+    logger = _FakeLogger()
+    app.handlers["message"]({"event": {"type": "message"}}, logger)
+
+    assert spawns == [2]
+    assert logger.infos == ["Spawning Slack worker for 2 new job(s)"]
+
+
+def test_create_bolt_app_does_not_spawn_worker_for_duplicate_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slack_app, "import_module", _fake_import_module)
+    service = _FakeSlackIngestionService()
+    service.results = (_FakeEnqueueJobResult(created=False),)
+    monkeypatch.setattr(
+        slack_app,
+        "build_slack_ingestion_service",
+        lambda settings, *, slack_client: service,
+    )
+    spawns: list[int] = []
+
+    app = cast(
+        _FakeBoltApp,
+        slack_app.create_bolt_app(
+            _settings(),
+            worker_spawner=spawns.append,
+        ),
+    )
+
+    app.handlers["file_shared"]({"event": {"type": "file_shared"}}, _FakeLogger())
+
+    assert spawns == []
+
+
+def test_spawn_slack_worker_once_runs_make_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[tuple[str, ...], Path]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda command, *, cwd: calls.append((command, cwd)),
+    )
+
+    slack_app.spawn_slack_worker_once(2)
+
+    assert calls == [
+        (("make", "slack-worker", "ONCE=1"), tmp_path),
+        (("make", "slack-worker", "ONCE=1"), tmp_path),
+    ]
 
 
 def test_run_socket_mode_app_starts_handler(
@@ -140,18 +220,28 @@ class _FakeSocketModeHandler:
 class _FakeSlackIngestionService:
     def __init__(self) -> None:
         self.payloads: list[dict[str, object]] = []
+        self.results: tuple[_FakeEnqueueJobResult, ...] = ()
         self.fail = False
 
     def handle_event_payload(self, payload: dict[str, object]) -> object:
         if self.fail:
             raise RuntimeError("boom")
         self.payloads.append(payload)
-        return ()
+        return self.results
 
 
 class _FakeLogger:
     def __init__(self) -> None:
         self.exceptions: list[str] = []
+        self.infos: list[str] = []
 
     def exception(self, message: str) -> None:
         self.exceptions.append(message)
+
+    def info(self, message: str, *args: object) -> None:
+        self.infos.append(message % args)
+
+
+class _FakeEnqueueJobResult:
+    def __init__(self, *, created: bool) -> None:
+        self.created = created

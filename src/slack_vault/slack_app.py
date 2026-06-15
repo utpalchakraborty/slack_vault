@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Callable
 from importlib import import_module
+from pathlib import Path
 from typing import Any, cast
 
 from slack_vault.config import Settings
@@ -10,6 +13,8 @@ from slack_vault.slack_ingest import (
     SlackWebClient,
     build_slack_ingestion_service,
 )
+
+WorkerSpawner = Callable[[int], None]
 
 
 def create_slack_web_client(settings: Settings) -> SlackWebClient:
@@ -21,11 +26,17 @@ def create_slack_web_client(settings: Settings) -> SlackWebClient:
     return cast(SlackWebClient, slack_sdk.WebClient(token=settings.slack.bot_token))
 
 
-def create_bolt_app(settings: Settings) -> object:
+def create_bolt_app(
+    settings: Settings,
+    *,
+    worker_spawner: WorkerSpawner | None = None,
+) -> object:
     """Create a Bolt app with Slack ingestion handlers registered."""
 
     if settings.slack.bot_token is None:
         raise ValueError("SLACK_BOT_TOKEN is required")
+    if worker_spawner is None:
+        worker_spawner = spawn_slack_worker_once
     slack_bolt = cast(Any, import_module("slack_bolt"))
     app = slack_bolt.App(
         token=settings.slack.bot_token,
@@ -38,13 +49,13 @@ def create_bolt_app(settings: Settings) -> object:
 
     def handle_message_events(body: dict[str, object], logger: Any) -> None:
         try:
-            service.handle_event_payload(body)
+            _handle_ingestion_event(body, logger, service, worker_spawner)
         except Exception:
             logger.exception("Failed to handle Slack message event")
 
     def handle_file_shared_events(body: dict[str, object], logger: Any) -> None:
         try:
-            service.handle_event_payload(body)
+            _handle_ingestion_event(body, logger, service, worker_spawner)
         except Exception:
             logger.exception("Failed to handle Slack file_shared event")
 
@@ -52,6 +63,16 @@ def create_bolt_app(settings: Settings) -> object:
     app.event("file_shared")(handle_file_shared_events)
 
     return cast(object, app)
+
+
+def spawn_slack_worker_once(count: int = 1) -> None:
+    """Start one background Slack worker process per newly queued job."""
+
+    for _index in range(count):
+        subprocess.Popen(
+            ("make", "slack-worker", "ONCE=1"),
+            cwd=Path.cwd(),
+        )
 
 
 def run_socket_mode_app(settings: Settings) -> None:
@@ -65,3 +86,17 @@ def run_socket_mode_app(settings: Settings) -> None:
         settings.slack.app_token,
     )
     handler.start()
+
+
+def _handle_ingestion_event(
+    body: dict[str, object],
+    event_logger: Any,
+    service: Any,
+    worker_spawner: WorkerSpawner,
+) -> None:
+    results = service.handle_event_payload(body)
+    created_jobs = sum(1 for result in results if result.created)
+    if created_jobs == 0:
+        return
+    event_logger.info("Spawning Slack worker for %s new job(s)", created_jobs)
+    worker_spawner(created_jobs)

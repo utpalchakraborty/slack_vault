@@ -51,9 +51,12 @@ Status as of 2026-06-15:
   `slack-vault run-slack` / `make run-slack`.
 - Slack setup can be checked before running the listener with
   `slack-vault check-slack-setup` / `make check-slack-setup`.
-- Ingestion jobs are processed separately through `slack-vault slack-worker` /
-  `make slack-worker`; `make slack-worker ONCE=1` processes at most one queued
-  job for development.
+- The local Socket Mode listener starts one background
+  `make slack-worker ONCE=1` process whenever a Slack event creates a new queued
+  ingestion job. Duplicate Slack events do not start another worker.
+- Ingestion jobs can also be processed manually through
+  `slack-vault slack-worker` / `make slack-worker`; `make slack-worker ONCE=1`
+  processes at most one queued job for development.
 - SQLite operational state defaults to
   `.data/slack-vault.sqlite3` via `SLACK_VAULT_OPERATIONAL_DB_PATH`.
 - Temporary Slack downloads default to `.data/slack-downloads/`, derived from
@@ -88,8 +91,9 @@ The first unit-testable Slack adapter slice is implemented:
   path. `ingest_local_file(...)` remains the local CLI wrapper, and Slack
   downloaded temporary files pass explicit `SourceIngestMetadata` with
   `ingestion_method="slack_file"`.
-- `slack-vault run-slack` starts the Socket Mode listener.
-- `slack-vault slack-worker` processes queued SQLite jobs.
+- `slack-vault run-slack` starts the Socket Mode listener and launches a
+  one-shot worker process after each newly queued Slack ingestion job.
+- `slack-vault slack-worker` manually processes queued SQLite jobs.
 
 ## Enterprise Grid Stance
 
@@ -269,6 +273,7 @@ sequenceDiagram
     Bolt-->>Slack: Ack immediately
     Bolt->>DB: Create queued ingestion_job
     Bolt->>Slack: Reply in thread: queued
+    Bolt->>Worker: Spawn make slack-worker ONCE=1 for new job
     Worker->>DB: Claim queued job
     Worker->>WebAPI: files.info(file_id, team_id)
     WebAPI-->>Worker: File metadata and private download URL
@@ -507,9 +512,9 @@ Automated setup option for later:
    into the synthesis evidence for context?
 4. Should external Slack Connect channels be rejected in Phase 6, or allowed for
    a named test channel?
-5. Should the POC worker remain a separately started command, or should the
-   listener start an in-process background worker for local demos after the
-   first manual smoke test?
+5. Should the event-triggered worker launcher stay as a local-development
+   `make slack-worker ONCE=1` subprocess, or move behind a production queue
+   adapter before the next deployment milestone?
 
 ## Official Slack References
 

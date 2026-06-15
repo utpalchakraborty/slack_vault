@@ -108,7 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "run-slack",
-        help="Run the Slack ingestion event listener with Socket Mode.",
+        help=(
+            "Run the Slack ingestion event listener with Socket Mode and spawn "
+            "one worker pass for each newly queued job."
+        ),
     )
 
     subparsers.add_parser(
@@ -118,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     slack_worker_parser = subparsers.add_parser(
         "slack-worker",
-        help="Process queued Slack ingestion jobs.",
+        help="Process queued Slack ingestion jobs manually.",
     )
     slack_worker_parser.add_argument(
         "--once",
