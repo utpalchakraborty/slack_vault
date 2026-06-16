@@ -14,19 +14,11 @@ from slack_vault.enhancement import AnthropicEvidenceEnhancer, EvidenceEnhancer
 from slack_vault.git_vault import GitVaultCommitter
 from slack_vault.ingest import IngestProcessingError, ingest_local_file
 from slack_vault.log_setup import configure_logging
-from slack_vault.qa import (
-    AIObsidianSearchQueryPlanner,
-    AnswerResult,
-    AnthropicQuestionAnswerer,
-    render_answer_result,
-)
-from slack_vault.retrieval import (
-    ObsidianCliSearch,
-    build_answer_context,
-    load_vault_index,
-)
+from slack_vault.qa import render_answer_result
+from slack_vault.qa_service import answer_question_from_settings
 from slack_vault.slack_app import create_slack_web_client, run_socket_mode_app
 from slack_vault.slack_ingest import build_slack_ingestion_service
+from slack_vault.slack_qa import build_slack_qa_service
 from slack_vault.slack_setup import (
     render_slack_setup_check,
     run_slack_setup_check,
@@ -128,6 +120,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Process at most one queued Slack job and exit.",
+    )
+
+    slack_qa_worker_parser = subparsers.add_parser(
+        "slack-qa-worker",
+        help="Process queued Slack Q&A jobs manually.",
+    )
+    slack_qa_worker_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process at most one queued Slack Q&A job and exit.",
     )
 
     return parser
@@ -251,25 +253,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "ask":
-        ai_provider = RetryingAITextProvider(
-            AnthropicAIProvider.from_settings(settings),
-            retry=settings.ai.retry,
+        result = answer_question_from_settings(
+            settings, args.question, limit=args.limit
         )
-        search_plan = AIObsidianSearchQueryPlanner(ai_provider).plan(args.question)
-        vault_name = (
-            settings.obsidian_cli_vault_name or settings.obsidian_vault_path.name
-        )
-        context = build_answer_context(
-            load_vault_index(settings.obsidian_vault_path),
-            args.question,
-            search_provider=ObsidianCliSearch(vault_name=vault_name),
-            search_queries=search_plan.queries,
-            limit=args.limit,
-        )
-        if context.items:
-            result = AnthropicQuestionAnswerer(ai_provider).answer(context)
-        else:
-            result = AnswerResult.no_evidence_result(context)
         print(render_answer_result(result))
         return 0
 
@@ -309,6 +295,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Processed Slack ingestion job: {processed.job_id}")
             print(f"Status: {processed.status.value}")
         print(f"Operational DB: {service.state.db_path}")
+        return 0
+
+    if args.command == "slack-qa-worker":
+        print(f"Log file: {log_path}")
+        qa_service = build_slack_qa_service(
+            settings,
+            slack_client=create_slack_web_client(settings),
+        )
+        processed_qa = qa_service.process_next_job()
+        if processed_qa is None:
+            print("No queued Slack Q&A jobs.")
+        else:
+            print(f"Processed Slack Q&A job: {processed_qa.job_id}")
+            print(f"Status: {processed_qa.status.value}")
+            if processed_qa.answer_text is not None:
+                print("Answered: yes")
+            if processed_qa.error_message is not None:
+                print(f"Error: {processed_qa.error_message}")
+        if args.once:
+            return 0
+        while True:
+            processed_qa = qa_service.process_next_job()
+            if processed_qa is None:
+                break
+            print(f"Processed Slack Q&A job: {processed_qa.job_id}")
+            print(f"Status: {processed_qa.status.value}")
+        print(f"Operational DB: {qa_service.state.db_path}")
         return 0
 
     raise ValueError(f"Unsupported command: {args.command}")

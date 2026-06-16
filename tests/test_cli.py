@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from slack_vault.ai import AITextRequest, AITextResponse
 from slack_vault.cli import main
 from slack_vault.config import Settings
-from slack_vault.ops_state import IngestionJob, IngestionJobStatus
+from slack_vault.ops_state import IngestionJob, IngestionJobStatus, QAJob, QAJobStatus
+from slack_vault.qa import AnswerCitation, AnswerResult
+from slack_vault.retrieval import AnswerContext
 from slack_vault.slack_setup import SlackSetupCheck, SlackSetupCheckResult
 from slack_vault.synthesis import (
     KnowledgeNoteWriteResult,
@@ -230,10 +231,6 @@ def test_ask_requires_ai_key(
 ) -> None:
     monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(tmp_path / "vault"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-    monkeypatch.setattr(
-        "slack_vault.cli.ObsidianCliSearch",
-        lambda vault_name: _FakeCliObsidianSearch(()),
-    )
 
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is required"):
         main(["ask", "What is unknown?"])
@@ -245,24 +242,29 @@ def test_ask_answers_from_vault_with_mocked_ai(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     vault_path = tmp_path / "vault"
-    _write_qa_fixture(vault_path)
+    calls: list[tuple[Path, str, int]] = []
     monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(vault_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def answer_question_from_settings(
+        settings: Settings,
+        question: str,
+        *,
+        limit: int,
+    ) -> AnswerResult:
+        calls.append((settings.obsidian_vault_path, question, limit))
+        return _cli_answer_result(question)
+
     monkeypatch.setattr(
-        "slack_vault.cli.AnthropicAIProvider.from_settings",
-        _fake_qa_provider_from_settings,
-    )
-    monkeypatch.setattr(
-        "slack_vault.cli.ObsidianCliSearch",
-        lambda vault_name: _FakeCliObsidianSearch(
-            (Path("10 Knowledge/project-alpha-plan.md"),)
-        ),
+        "slack_vault.cli.answer_question_from_settings",
+        answer_question_from_settings,
     )
 
-    exit_code = main(["ask", "What does Project Alpha need?"])
+    exit_code = main(["ask", "What does Project Alpha need?", "--limit", "3"])
     captured = capsys.readouterr()
 
     assert exit_code == 0
+    assert calls == [(vault_path, "What does Project Alpha need?", 3)]
     assert "Answer:" in captured.out
     assert "Project Alpha needs local-first ingest [1]." in captured.out
     assert "[[10 Knowledge/project-alpha-plan|Project Alpha Plan]]" in captured.out
@@ -392,45 +394,71 @@ def test_slack_worker_processes_until_queue_is_empty(
     assert service.calls == 3
 
 
+def test_slack_qa_worker_once_reports_empty_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _FakeCliSlackQAService(tmp_path, ())
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-token")
+    monkeypatch.setenv("SLACK_VAULT_OPERATIONAL_DB_PATH", str(tmp_path / "ops.db"))
+    monkeypatch.setattr(
+        "slack_vault.cli.create_slack_web_client", lambda settings: object()
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.build_slack_qa_service",
+        lambda settings, *, slack_client: service,
+    )
+
+    exit_code = main(["slack-qa-worker", "--once"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "No queued Slack Q&A jobs." in captured.out
+    assert service.calls == 1
+
+
+def test_slack_qa_worker_processes_until_queue_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _FakeCliSlackQAService(
+        tmp_path,
+        (
+            _cli_qa_job(
+                job_id="qa-job-first",
+                status=QAJobStatus.SUCCEEDED,
+                answer_text="Answered",
+                error_message="warning only",
+            ),
+            _cli_qa_job(job_id="qa-job-second", status=QAJobStatus.FAILED),
+        ),
+    )
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-token")
+    monkeypatch.setenv("SLACK_VAULT_OPERATIONAL_DB_PATH", str(tmp_path / "ops.db"))
+    monkeypatch.setattr(
+        "slack_vault.cli.create_slack_web_client", lambda settings: object()
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.build_slack_qa_service",
+        lambda settings, *, slack_client: service,
+    )
+
+    exit_code = main(["slack-qa-worker"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Processed Slack Q&A job: qa-job-first" in captured.out
+    assert "Answered: yes" in captured.out
+    assert "Error: warning only" in captured.out
+    assert "Processed Slack Q&A job: qa-job-second" in captured.out
+    assert "Operational DB:" in captured.out
+    assert service.calls == 3
+
+
 def _fake_provider_from_settings(settings: Settings) -> object:
     return object()
-
-
-def _fake_qa_provider_from_settings(settings: Settings) -> object:
-    return _FakeAskTextProvider()
-
-
-class _FakeAskTextProvider:
-    def __init__(self) -> None:
-        self.responses = [
-            '{"queries": ["Project Alpha", "local-first ingest"]}',
-            (
-                '{"answer": "Project Alpha needs local-first ingest [1].", '
-                '"citation_ids": [1]}'
-            ),
-        ]
-        self.index = 0
-
-    def complete_text(self, request: AITextRequest) -> AITextResponse:
-        response = self.responses[self.index]
-        self.index += 1
-        return AITextResponse(
-            text=response,
-            model="fake-model",
-            stop_reason="end_turn",
-            input_tokens=1,
-            output_tokens=1,
-        )
-
-
-class _FakeCliObsidianSearch:
-    def __init__(self, paths: tuple[Path, ...]) -> None:
-        self.paths = paths
-        self.calls: list[tuple[str, int]] = []
-
-    def search(self, query: str, *, limit: int) -> tuple[Path, ...]:
-        self.calls.append((query, limit))
-        return self.paths[:limit]
 
 
 class _FakeCliSlackState:
@@ -445,6 +473,19 @@ class _FakeCliSlackService:
         self.calls = 0
 
     def process_next_job(self) -> IngestionJob | None:
+        self.calls += 1
+        if not self.jobs:
+            return None
+        return self.jobs.pop(0)
+
+
+class _FakeCliSlackQAService:
+    def __init__(self, tmp_path: Path, jobs: tuple[QAJob, ...]) -> None:
+        self.state = _FakeCliSlackState(tmp_path / "ops.db")
+        self.jobs = list(jobs)
+        self.calls = 0
+
+    def process_next_job(self) -> QAJob | None:
         self.calls += 1
         if not self.jobs:
             return None
@@ -480,6 +521,41 @@ def _cli_job(
         source_record_path=None,
         knowledge_note_paths=(),
         git_commit_hash=None,
+        slack_result_message_ts=None,
+        error_stage=None,
+        error_message=error_message,
+        created_at="2026-06-14T12:00:00Z",
+        started_at="2026-06-14T12:01:00Z",
+        finished_at="2026-06-14T12:02:00Z",
+    )
+
+
+def _cli_qa_job(
+    *,
+    job_id: str,
+    status: QAJobStatus,
+    answer_text: str | None = None,
+    error_message: str | None = None,
+) -> QAJob:
+    return QAJob(
+        job_id=job_id,
+        status=status,
+        slack_event_id="Ev-qa",
+        dedupe_key=f"dedupe-{job_id}",
+        enterprise_id="E123",
+        team_id="T123",
+        context_team_id="TCTX",
+        channel_id="D123",
+        channel_type="im",
+        user_id="W123",
+        event_ts="1718300000.000200",
+        message_ts="1718300000.000100",
+        thread_ts=None,
+        question_text="What does Project Alpha need?",
+        search_query="Project Alpha",
+        answer_text=answer_text,
+        citations_json="[]",
+        slack_initial_message_ts="1718300001.000100",
         slack_result_message_ts=None,
         error_stage=None,
         error_message=error_message,
@@ -557,6 +633,28 @@ class _FakeFailingCliSynthesizer:
         )
 
 
+def _cli_answer_result(question: str) -> AnswerResult:
+    return AnswerResult(
+        question=question,
+        answer="Project Alpha needs local-first ingest [1].",
+        citations=(
+            AnswerCitation(
+                citation_id=1,
+                note_title="Project Alpha Plan",
+                note_path=Path("10 Knowledge/project-alpha-plan.md"),
+                source_ids=("source-alpha",),
+                source_record_paths=(Path("20 Sources/sources/source-alpha.md"),),
+            ),
+        ),
+        context=AnswerContext(
+            question=question,
+            search_query="Project Alpha",
+            items=(),
+        ),
+        answerer_name="fake",
+    )
+
+
 def _init_git_repo(path: Path) -> None:
     path.mkdir(parents=True)
     _run_git(path, "init")
@@ -574,47 +672,4 @@ def _run_git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
         check=True,
         capture_output=True,
         text=True,
-    )
-
-
-def _write_qa_fixture(vault_path: Path) -> None:
-    note_path = vault_path / "10 Knowledge/project-alpha-plan.md"
-    note_path.parent.mkdir(parents=True, exist_ok=True)
-    note_path.write_text(
-        "\n".join(
-            [
-                "---",
-                'title: "Project Alpha Plan"',
-                'type: "knowledge_note"',
-                'note_id: "knowledge-project-alpha-plan"',
-                'source_ids: ["source-alpha"]',
-                'topics: ["Project Alpha"]',
-                'taxonomy: ["projects"]',
-                "---",
-                "",
-                "# Project Alpha Plan",
-                "",
-                "Project Alpha needs local-first ingest.",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    source_path = vault_path / "20 Sources/sources/source-alpha.md"
-    source_path.parent.mkdir(parents=True, exist_ok=True)
-    source_path.write_text(
-        "\n".join(
-            [
-                "---",
-                'title: "Alpha Plan.docx"',
-                'type: "source_record"',
-                'source_id: "source-alpha"',
-                'original_filename: "Alpha Plan.docx"',
-                "---",
-                "",
-                "# Alpha Plan.docx",
-                "",
-            ]
-        ),
-        encoding="utf-8",
     )

@@ -1,4 +1,4 @@
-.PHONY: ask check-slack-setup ingest-file init-vault init-vault-overwrite run run-slack show-config slack-worker
+.PHONY: ask check-slack-setup ingest-file init-vault init-vault-overwrite run run-slack show-config slack-qa-worker slack-worker
 
 run: show-config
 
@@ -31,3 +31,6 @@ check-slack-setup:
 
 slack-worker:
 	$(UV_RUN) slack-vault slack-worker $(if $(ONCE),--once)
+
+slack-qa-worker:
+	$(UV_RUN) slack-vault slack-qa-worker $(if $(ONCE),--once)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from slack_vault.slack_events import normalize_slack_ingestion_events
+from slack_vault.slack_events import (
+    normalize_slack_ingestion_events,
+    normalize_slack_qa_events,
+)
 
 
 def test_normalize_message_event_extracts_file_jobs_and_enterprise_context() -> None:
@@ -220,3 +223,82 @@ def test_normalize_file_shared_event_rejects_invalid_payloads() -> None:
         "event_ts": "1718300000.000300",
     }
     assert normalize_slack_ingestion_events(payload, ingestion_channel_id="C123") == ()
+
+
+def test_normalize_qa_direct_message_extracts_question_context() -> None:
+    payload: dict[str, object] = {
+        "type": "event_callback",
+        "team_id": "T123",
+        "context_team_id": "TCTX",
+        "context_enterprise_id": "E123",
+        "event_id": "Ev-qa",
+        "authorizations": [
+            {
+                "enterprise_id": "E123",
+                "team_id": "T123",
+                "user_id": "W999",
+                "is_enterprise_install": True,
+            }
+        ],
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D123",
+            "user": "W123",
+            "text": "  What does Project Alpha need?  ",
+            "ts": "1718300000.000100",
+            "event_ts": "1718300000.000200",
+        },
+    }
+
+    events = normalize_slack_qa_events(payload)
+
+    assert len(events) == 1
+    assert events[0].event_id == "Ev-qa"
+    assert events[0].event_type == "message.im"
+    assert events[0].enterprise_id == "E123"
+    assert events[0].team_id == "T123"
+    assert events[0].context_team_id == "TCTX"
+    assert events[0].is_enterprise_install is True
+    assert events[0].channel_id == "D123"
+    assert events[0].channel_type == "im"
+    assert events[0].user_id == "W123"
+    assert events[0].message_ts == "1718300000.000100"
+    assert events[0].thread_ts is None
+    assert events[0].question_text == "What does Project Alpha need?"
+    assert events[0].dedupe_key == "E123|T123|D123|1718300000.000100"
+
+
+def test_normalize_qa_direct_message_ignores_non_question_payloads() -> None:
+    base_event: dict[str, object] = {
+        "type": "message",
+        "channel_type": "im",
+        "channel": "D123",
+        "user": "W123",
+        "text": "What does Project Alpha need?",
+        "ts": "1718300000.000100",
+        "event_ts": "1718300000.000200",
+    }
+
+    for ignored_event in (
+        {**base_event, "channel_type": "channel"},
+        {**base_event, "text": "   "},
+        {**base_event, "subtype": "bot_message"},
+        {**base_event, "bot_id": "B123"},
+        {**base_event, "files": [{"id": "F123"}]},
+    ):
+        assert normalize_slack_qa_events({"event": ignored_event}) == ()
+
+    assert (
+        normalize_slack_qa_events({"is_ext_shared_channel": True, "event": base_event})
+        == ()
+    )
+    assert (
+        len(
+            normalize_slack_qa_events(
+                {"is_ext_shared_channel": True, "event": base_event},
+                allow_external_shared_channels=True,
+            )
+        )
+        == 1
+    )

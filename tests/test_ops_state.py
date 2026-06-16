@@ -4,8 +4,12 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from slack_vault.ops_state import IngestionJobStatus, SQLiteOperationalState
-from slack_vault.slack_events import SlackIngestionEvent
+from slack_vault.ops_state import (
+    IngestionJobStatus,
+    QAJobStatus,
+    SQLiteOperationalState,
+)
+from slack_vault.slack_events import SlackIngestionEvent, SlackQAEvent
 
 
 def test_sqlite_state_records_events_and_enqueues_idempotent_jobs(
@@ -176,6 +180,92 @@ def test_sqlite_state_marks_failure(tmp_path: Path) -> None:
     assert failed.error_message == "not visible"
 
 
+def test_sqlite_state_records_qa_events_and_enqueues_idempotent_jobs(
+    tmp_path: Path,
+) -> None:
+    state = SQLiteOperationalState(tmp_path / "state.sqlite3")
+    event = _qa_event()
+
+    first_event = state.record_slack_qa_event(
+        event,
+        received_at=datetime(2026, 6, 14, 12, 0, tzinfo=UTC),
+    )
+    second_event = state.record_slack_qa_event(
+        event,
+        received_at=datetime(2026, 6, 14, 12, 1, tzinfo=UTC),
+    )
+    first_job = state.enqueue_qa_job(
+        event,
+        created_at=datetime(2026, 6, 14, 12, 0, tzinfo=UTC),
+    )
+    second_job = state.enqueue_qa_job(
+        event,
+        created_at=datetime(2026, 6, 14, 12, 1, tzinfo=UTC),
+    )
+
+    assert first_event is True
+    assert second_event is False
+    assert first_job.created is True
+    assert second_job.created is False
+    assert second_job.job.job_id == first_job.job.job_id
+    assert first_job.job.question_text == "What does Project Alpha need?"
+    assert state.list_qa_jobs() == (first_job.job,)
+
+
+def test_sqlite_state_claims_and_marks_qa_success(tmp_path: Path) -> None:
+    state = SQLiteOperationalState(tmp_path / "state.sqlite3")
+    job = state.enqueue_qa_job(_qa_event()).job
+    state.update_qa_job_initial_message_ts(
+        job.job_id,
+        slack_initial_message_ts="1718300001.000100",
+    )
+
+    claimed = state.claim_next_queued_qa_job(
+        started_at=datetime(2026, 6, 14, 12, 2, tzinfo=UTC),
+    )
+
+    assert claimed is not None
+    assert claimed.status is QAJobStatus.RUNNING
+    assert claimed.started_at == "2026-06-14T12:02:00Z"
+    assert claimed.slack_initial_message_ts == "1718300001.000100"
+
+    state.mark_qa_job_succeeded(
+        claimed.job_id,
+        search_query="Project Alpha",
+        answer_text="Project Alpha needs local-first ingest [1].",
+        citations_json='[{"citation_id": 1}]',
+        slack_result_message_ts="1718300002.000100",
+        finished_at=datetime(2026, 6, 14, 12, 3, tzinfo=UTC),
+    )
+    completed = state.get_qa_job(claimed.job_id)
+
+    assert completed is not None
+    assert completed.status is QAJobStatus.SUCCEEDED
+    assert completed.search_query == "Project Alpha"
+    assert completed.answer_text == "Project Alpha needs local-first ingest [1]."
+    assert completed.citations_json == '[{"citation_id": 1}]'
+    assert completed.slack_result_message_ts == "1718300002.000100"
+    assert completed.finished_at == "2026-06-14T12:03:00Z"
+
+
+def test_sqlite_state_marks_qa_failure(tmp_path: Path) -> None:
+    state = SQLiteOperationalState(tmp_path / "state.sqlite3")
+    job = state.enqueue_qa_job(_qa_event()).job
+
+    state.mark_qa_job_failed(
+        job.job_id,
+        error_stage="slack_qa",
+        error_message="rate limited",
+    )
+
+    failed = state.get_qa_job(job.job_id)
+
+    assert failed is not None
+    assert failed.status is QAJobStatus.FAILED
+    assert failed.error_stage == "slack_qa"
+    assert failed.error_message == "rate limited"
+
+
 def _event(
     *,
     event_id: str = "Ev123",
@@ -200,6 +290,26 @@ def _event(
         initial_comment="Please ingest this.",
         is_ext_shared_channel=False,
         raw_payload={"event_id": event_id},
+    )
+
+
+def _qa_event() -> SlackQAEvent:
+    return SlackQAEvent(
+        event_id="Ev-qa",
+        event_type="message.im",
+        enterprise_id="E123",
+        team_id="T123",
+        context_team_id="TCTX",
+        is_enterprise_install=True,
+        channel_id="D123",
+        channel_type="im",
+        user_id="W123",
+        event_ts="1718300000.000200",
+        message_ts="1718300000.000100",
+        thread_ts=None,
+        question_text="What does Project Alpha need?",
+        is_ext_shared_channel=False,
+        raw_payload={"event_id": "Ev-qa"},
     )
 
 

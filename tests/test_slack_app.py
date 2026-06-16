@@ -81,6 +81,47 @@ def test_create_bolt_app_spawns_worker_for_created_jobs(
     assert logger.infos == ["Spawning Slack worker for 2 new job(s)"]
 
 
+def test_create_bolt_app_spawns_qa_worker_for_created_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slack_app, "import_module", _fake_import_module)
+    ingestion_service = _FakeSlackIngestionService()
+    qa_service = _FakeSlackQAService()
+    qa_service.results = (
+        _FakeEnqueueJobResult(created=True),
+        _FakeEnqueueJobResult(created=False),
+    )
+    monkeypatch.setattr(
+        slack_app,
+        "build_slack_ingestion_service",
+        lambda settings, *, slack_client: ingestion_service,
+    )
+    monkeypatch.setattr(
+        slack_app,
+        "build_slack_qa_service",
+        lambda settings, *, slack_client: qa_service,
+    )
+    ingestion_spawns: list[int] = []
+    qa_spawns: list[int] = []
+
+    app = cast(
+        _FakeBoltApp,
+        slack_app.create_bolt_app(
+            _settings(),
+            worker_spawner=ingestion_spawns.append,
+            qa_worker_spawner=qa_spawns.append,
+        ),
+    )
+
+    logger = _FakeLogger()
+    app.handlers["message"](_message_im_payload(), logger)
+
+    assert ingestion_spawns == []
+    assert qa_spawns == [1]
+    assert qa_service.payloads == [_message_im_payload()]
+    assert logger.infos == ["Spawning Slack Q&A worker for 1 new job(s)"]
+
+
 def test_create_bolt_app_does_not_spawn_worker_for_duplicate_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -124,6 +165,26 @@ def test_spawn_slack_worker_once_runs_make_worker(
     assert calls == [
         (("make", "slack-worker", "ONCE=1"), tmp_path),
         (("make", "slack-worker", "ONCE=1"), tmp_path),
+    ]
+
+
+def test_spawn_slack_qa_worker_once_runs_make_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[tuple[str, ...], Path]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda command, *, cwd: calls.append((command, cwd)),
+    )
+
+    slack_app.spawn_slack_qa_worker_once(2)
+
+    assert calls == [
+        (("make", "slack-qa-worker", "ONCE=1"), tmp_path),
+        (("make", "slack-qa-worker", "ONCE=1"), tmp_path),
     ]
 
 
@@ -230,6 +291,19 @@ class _FakeSlackIngestionService:
         return self.results
 
 
+class _FakeSlackQAService:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+        self.results: tuple[_FakeEnqueueJobResult, ...] = ()
+        self.fail = False
+
+    def handle_event_payload(self, payload: dict[str, object]) -> object:
+        if self.fail:
+            raise RuntimeError("boom")
+        self.payloads.append(payload)
+        return self.results
+
+
 class _FakeLogger:
     def __init__(self) -> None:
         self.exceptions: list[str] = []
@@ -245,3 +319,20 @@ class _FakeLogger:
 class _FakeEnqueueJobResult:
     def __init__(self, *, created: bool) -> None:
         self.created = created
+
+
+def _message_im_payload() -> dict[str, object]:
+    return {
+        "type": "event_callback",
+        "team_id": "T123",
+        "event_id": "Ev-qa",
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D123",
+            "user": "W123",
+            "text": "What does Project Alpha need?",
+            "ts": "1718300000.000100",
+            "event_ts": "1718300000.000200",
+        },
+    }

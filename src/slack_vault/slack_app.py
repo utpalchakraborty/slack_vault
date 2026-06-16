@@ -13,6 +13,7 @@ from slack_vault.slack_ingest import (
     SlackWebClient,
     build_slack_ingestion_service,
 )
+from slack_vault.slack_qa import build_slack_qa_service
 
 WorkerSpawner = Callable[[int], None]
 
@@ -30,6 +31,7 @@ def create_bolt_app(
     settings: Settings,
     *,
     worker_spawner: WorkerSpawner | None = None,
+    qa_worker_spawner: WorkerSpawner | None = None,
 ) -> object:
     """Create a Bolt app with Slack ingestion handlers registered."""
 
@@ -37,6 +39,8 @@ def create_bolt_app(
         raise ValueError("SLACK_BOT_TOKEN is required")
     if worker_spawner is None:
         worker_spawner = spawn_slack_worker_once
+    if qa_worker_spawner is None:
+        qa_worker_spawner = spawn_slack_qa_worker_once
     slack_bolt = cast(Any, import_module("slack_bolt"))
     app = slack_bolt.App(
         token=settings.slack.bot_token,
@@ -46,12 +50,20 @@ def create_bolt_app(
         settings,
         slack_client=cast(SlackWebClient, app.client),
     )
+    qa_service = build_slack_qa_service(
+        settings,
+        slack_client=cast(SlackWebClient, app.client),
+    )
 
     def handle_message_events(body: dict[str, object], logger: Any) -> None:
         try:
             _handle_ingestion_event(body, logger, service, worker_spawner)
         except Exception:
             logger.exception("Failed to handle Slack message event")
+        try:
+            _handle_qa_event(body, logger, qa_service, qa_worker_spawner)
+        except Exception:
+            logger.exception("Failed to handle Slack Q&A message event")
 
     def handle_file_shared_events(body: dict[str, object], logger: Any) -> None:
         try:
@@ -71,6 +83,16 @@ def spawn_slack_worker_once(count: int = 1) -> None:
     for _index in range(count):
         subprocess.Popen(
             ("make", "slack-worker", "ONCE=1"),
+            cwd=Path.cwd(),
+        )
+
+
+def spawn_slack_qa_worker_once(count: int = 1) -> None:
+    """Start one background Slack Q&A worker process per newly queued job."""
+
+    for _index in range(count):
+        subprocess.Popen(
+            ("make", "slack-qa-worker", "ONCE=1"),
             cwd=Path.cwd(),
         )
 
@@ -99,4 +121,18 @@ def _handle_ingestion_event(
     if created_jobs == 0:
         return
     event_logger.info("Spawning Slack worker for %s new job(s)", created_jobs)
+    worker_spawner(created_jobs)
+
+
+def _handle_qa_event(
+    body: dict[str, object],
+    event_logger: Any,
+    service: Any,
+    worker_spawner: WorkerSpawner,
+) -> None:
+    results = service.handle_event_payload(body)
+    created_jobs = sum(1 for result in results if result.created)
+    if created_jobs == 0:
+        return
+    event_logger.info("Spawning Slack Q&A worker for %s new job(s)", created_jobs)
     worker_spawner(created_jobs)

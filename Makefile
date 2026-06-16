@@ -23,3 +23,7 @@ help:
 	@printf "  make init-vault-overwrite Rewrite starter vault files\n"
 	@printf "  make ingest-file FILE=... Archive, extract, write records, and commit vault\n"
 	@printf "  make ask QUESTION=...     Answer from generated vault notes\n"
+	@printf "  make run-slack            Run the Slack Socket Mode listener\n"
+	@printf "  make check-slack-setup    Check Slack app credentials and permissions\n"
+	@printf "  make slack-worker         Process queued Slack ingestion jobs\n"
+	@printf "  make slack-qa-worker      Process queued Slack Q&A jobs\n"

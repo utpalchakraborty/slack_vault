@@ -65,7 +65,7 @@ Status as of 2026-06-16:
   optional synthesis, source-record, optional Git-commit, and optional Git-push
   pipeline used by local file ingestion.
 - Current automated validation passes with no external services configured:
-  `make check` reports `155 passed, 2 skipped` with `90.27%` coverage.
+  `make check` reports `184 passed, 2 skipped` with `90.58%` coverage.
 - Current live setup validation passes with configured Slack credentials:
   `make check-slack-setup`.
 - The 2026-06-16 event-triggered dev-channel smoke test passed: uploading a
@@ -165,11 +165,20 @@ Add these only if the test channel is private:
 - `groups:read`
 - `groups:history`
 
-Add these later for Phase 7 Q&A:
+Phase 7 direct-message Q&A now requires:
 
-- `app_mentions:read`
 - `im:history`
-- `im:write`
+- `message.im` bot event subscription
+
+Add these later as needed:
+
+- `app_mentions:read` for Phase 7 mention/thread Q&A.
+- `im:write` if Slack Vault should proactively open DM conversations.
+
+For Phase 7 direct bot Q&A, also enable the Slack app's App Home Messages tab.
+Without that App Home setting, Slack shows users that sending messages to the app
+has been turned off even if the bot token has messaging scopes. After adding or
+changing bot scopes, reinstall the app to the workspace so the new grants apply.
 
 Do not grant Admin API scopes to the ingestion bot for Phase 6. If channel
 creation automation is useful later, use a separate admin/bootstrap credential
@@ -183,6 +192,10 @@ Recommended Phase 6 event subscriptions:
 - `app_rate_limited` for observability.
 - `team_access_granted` and `team_access_revoked` if the app is installed as an
   org-ready app.
+
+Add `app_mention` later for Phase 7 mention/thread Q&A. The Socket Mode listener
+already receives App Home Messages tab DMs through `message.im` and routes those
+events to the Q&A handler rather than the file-ingestion handler.
 
 The handler should ignore:
 
@@ -538,6 +551,7 @@ Automated setup option for later:
 - [Developing apps for Enterprise orgs](https://docs.slack.dev/enterprise/developing-for-enterprise-orgs/)
 - [Managing organization-ready apps](https://docs.slack.dev/enterprise/organization-ready-apps/)
 - [Testing Enterprise org apps](https://docs.slack.dev/enterprise/testing-enterprise-org-apps/)
+- [App Home Messages tab](https://docs.slack.dev/surfaces/app-home/#messages-tab)
 - [Events API](https://docs.slack.dev/apis/events-api/)
 - [Bolt for Python Socket Mode](https://docs.slack.dev/tools/bolt-python/concepts/socket-mode/)
 - [`file_shared` event](https://docs.slack.dev/reference/events/file_shared/)

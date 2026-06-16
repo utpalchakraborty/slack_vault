@@ -61,20 +61,98 @@ Already implemented:
   Q&A path.
 - Local Q&A now uses an AI-planned multi-query Obsidian search before answer
   synthesis.
+- CLI Q&A orchestration is now exposed through a reusable service:
+  `answer_question_from_settings(settings, question, limit=...)`.
+- AI is required for local Q&A. Missing AI credentials fail clearly instead of
+  returning an answer from a blind deterministic search.
+- AI provider request, response, and error records are written to rotating JSONL
+  at `.data/logs/ai-interactions.jsonl` by default. Rotated files are
+  gzip-compressed and retention uses `SLACK_VAULT_LOG_BACKUP_COUNT`.
 - Slack Socket Mode is already used for ingestion through `make run-slack`.
 - SQLite operational state already exists for Slack ingestion events and jobs.
 - Slack thread replies already work for ingestion status updates.
+- Slack setup preflight verifies Phase 7 DM requirements: the App Home Messages
+  tab, `message.im`, `im:history`, and `chat:write`.
+- SQLite operational state now includes Q&A event and job tables.
+- `slack-vault slack-qa-worker` and `make slack-qa-worker` process queued Q&A
+  jobs.
+- Slack direct-message Q&A is wired through the Socket Mode `message` handler:
+  user DMs enqueue one Q&A job, post an immediate checking message, and spawn
+  `make slack-qa-worker ONCE=1`.
+- Slack Q&A answers are rendered as Slack mrkdwn with vault-relative evidence
+  citations.
 
 Missing for Phase 7:
 
-- Slack app message/mention event subscriptions for Q&A.
-- Setup preflight checks for Q&A-specific scopes and bot events.
-- A reusable Q&A service that is independent of CLI printing and preserves the
-  AI search-planning step.
-- Slack Q&A event normalization and routing.
-- SQLite state for Q&A job idempotency and result tracking.
-- A Q&A worker entrypoint.
-- Slack-formatted answer/citation rendering.
+- Slack `app_mention` handling for channel and thread Q&A.
+- Mention-text normalization that strips bot mention syntax.
+- Live Slack DM and mention smoke-test documentation.
+
+## Current Status
+
+Status as of 2026-06-16:
+
+- Local Phase 7 groundwork through AI-planned Q&A logging is implemented and
+  committed in the code repository:
+  `274504a Add AI-planned vault Q&A logging`.
+- Phase 7.1 reusable local Q&A service extraction is implemented in the current
+  code:
+  - `LocalQuestionAnsweringService` in `src/slack_vault/qa_service.py` plans AI
+    search queries, retrieves Obsidian context, handles no-evidence results, and
+    delegates synthesis to the configured answerer.
+  - `answer_question_from_settings(settings, question, limit=...)` builds the
+    default Anthropic-backed service from runtime settings.
+  - `slack-vault ask` delegates to the reusable service and keeps the existing
+    CLI answer rendering behavior.
+- `make ask` now performs two AI-backed steps:
+  - plan concise Obsidian search queries from the user question;
+  - synthesize a cited answer only from the returned vault context.
+- The Obsidian vault path remains controlled by `SLACK_VAULT_OBSIDIAN_PATH`.
+  `SLACK_VAULT_OBSIDIAN_CLI_VAULT` is only an escape hatch for unusual Obsidian
+  vault registration names.
+- Live local Q&A smoke test passed with:
+  `make ask QUESTION="What info do you have on NJ company filings?"`
+  The answer cited:
+  - `10 Knowledge/new-jersey-company-filings-status-garden-state-meridian-services-llc.md`
+  - `10 Knowledge/company-filings-status-current-state-and-priorities.md`
+- Phase 7.2 Q&A job state and worker wiring is implemented in the current code:
+  - `slack_qa_events` and `qa_jobs` live in the existing SQLite operational DB.
+  - `slack-vault slack-qa-worker` / `make slack-qa-worker` process queued Q&A
+    jobs with the reusable local Q&A service.
+  - Worker success records search query, answer text, citations JSON, and Slack
+    result message timestamp; worker failure records the error and posts a
+    Slack failure message.
+- Phase 7.3 direct-message Q&A is implemented in the current code:
+  - Slack `message` events with `channel_type == "im"` normalize into Q&A jobs.
+  - Bot-authored DMs, empty messages, external shared-channel events, and
+    file-upload messages are ignored.
+  - New Q&A jobs post `Checking the vault for relevant notes...` and spawn
+    `make slack-qa-worker ONCE=1`.
+  - The final answer is posted back into the same DM.
+- Automated validation passed after the Phase 7.3 implementation with
+  `make check`: `184 passed, 2 skipped`, total coverage `90.58%`.
+- Live Slack setup validation passed with `make check-slack-setup`.
+- Slack `app_mention` channel/thread Q&A is not implemented yet.
+
+## Restart Context
+
+When picking this up later:
+
+1. Confirm the code repository contains the Phase 7.1 service extraction:
+   `src/slack_vault/qa_service.py` and CLI `ask` delegation to
+   `answer_question_from_settings(...)`.
+2. Run `make check`.
+3. Run a local Q&A smoke test with a known vault question:
+   `make ask QUESTION="What info do you have on NJ company filings?"`.
+4. Confirm `.data/logs/ai-interactions.jsonl` receives request/response JSONL
+   records and that rotated files are gzipped if rollover occurs.
+5. Run `make check-slack-setup` before live Slack testing.
+6. For live DM testing, run `make run-slack`, send a direct message to
+   `bizee_value_dev_bot`, and confirm the checking message plus final cited
+   answer appear in the same DM.
+
+The next code step is Phase 7.4: add `app_mention` handling, strip bot mention
+syntax, and reply in the original Slack thread.
 
 ## Slack App Requirements
 
@@ -249,6 +327,8 @@ Acceptance criteria:
 
 ### Phase 7.1: Reusable Local Q&A Service
 
+Status: complete as of 2026-06-16.
+
 Deliverables:
 
 - Move CLI Q&A orchestration into a reusable service, for example
@@ -263,6 +343,8 @@ Acceptance criteria:
 - Slack code can call one service method without duplicating CLI logic.
 
 ### Phase 7.2: Q&A Job State And Worker
+
+Status: complete as of 2026-06-16.
 
 Deliverables:
 
@@ -280,6 +362,8 @@ Acceptance criteria:
   losing the job state.
 
 ### Phase 7.3: Direct Message Q&A
+
+Status: complete as of 2026-06-16.
 
 Deliverables:
 

@@ -317,6 +317,7 @@ def _check_app_manifest(
     app_name = _manifest_app_name(manifest)
     add("app manifest export", True, f"app={app_name or app_id}")
     _check_manifest_socket_mode(add, manifest, settings)
+    _check_manifest_app_home_messages(add, manifest)
     _check_manifest_bot_events(add, manifest, settings)
     _check_manifest_bot_scopes(add, manifest, settings)
 
@@ -357,6 +358,30 @@ def _check_manifest_bot_events(
     )
 
 
+def _check_manifest_app_home_messages(
+    add: AddCheck,
+    manifest: Mapping[str, object],
+) -> None:
+    features = _mapping(manifest.get("features")) or {}
+    app_home = _mapping(features.get("app_home")) or {}
+    messages_tab_enabled = app_home.get("messages_tab_enabled")
+    messages_tab_read_only_enabled = app_home.get("messages_tab_read_only_enabled")
+    detail = (
+        f"messages_tab_enabled={messages_tab_enabled} "
+        f"messages_tab_read_only_enabled={messages_tab_read_only_enabled}"
+    )
+    add(
+        "app manifest App Home Messages tab",
+        messages_tab_enabled is True,
+        detail,
+    )
+    add(
+        "app manifest App Home Messages writable",
+        messages_tab_enabled is True and messages_tab_read_only_enabled is not True,
+        detail,
+    )
+
+
 def _check_manifest_bot_scopes(
     add: AddCheck,
     manifest: Mapping[str, object],
@@ -376,8 +401,8 @@ def _check_manifest_bot_scopes(
 
 def _required_bot_events(settings: Settings) -> tuple[str, ...]:
     if settings.slack.ingestion_channel_is_private is True:
-        return ("file_shared", "message.groups")
-    return ("file_shared", "message.channels")
+        return ("file_shared", "message.groups", "message.im")
+    return ("file_shared", "message.channels", "message.im")
 
 
 def _required_bot_scopes(settings: Settings) -> tuple[str, ...]:
@@ -386,6 +411,7 @@ def _required_bot_scopes(settings: Settings) -> tuple[str, ...]:
         required.extend(("groups:read", "groups:history"))
     else:
         required.extend(("channels:read", "channels:history"))
+    required.append("im:history")
     return tuple(required)
 
 

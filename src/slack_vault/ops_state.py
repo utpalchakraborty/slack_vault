@@ -1,4 +1,4 @@
-"""SQLite operational state for Slack ingestion."""
+"""SQLite operational state for Slack ingestion and Q&A."""
 
 from __future__ import annotations
 
@@ -14,11 +14,21 @@ from pathlib import Path
 from typing import cast
 
 from slack_vault.archive import format_datetime
-from slack_vault.slack_events import SlackIngestionEvent
+from slack_vault.slack_events import SlackIngestionEvent, SlackQAEvent
 
 
 class IngestionJobStatus(StrEnum):
     """Operational status for a Slack ingestion job."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    IGNORED = "ignored"
+
+
+class QAJobStatus(StrEnum):
+    """Operational status for a Slack Q&A job."""
 
     QUEUED = "queued"
     RUNNING = "running"
@@ -61,6 +71,36 @@ class IngestionJob:
 
 
 @dataclass(frozen=True)
+class QAJob:
+    """Persisted Slack Q&A job."""
+
+    job_id: str
+    status: QAJobStatus
+    slack_event_id: str
+    dedupe_key: str
+    enterprise_id: str | None
+    team_id: str | None
+    context_team_id: str | None
+    channel_id: str
+    channel_type: str
+    user_id: str | None
+    event_ts: str
+    message_ts: str
+    thread_ts: str | None
+    question_text: str
+    search_query: str | None
+    answer_text: str | None
+    citations_json: str
+    slack_initial_message_ts: str | None
+    slack_result_message_ts: str | None
+    error_stage: str | None
+    error_message: str | None
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+
+
+@dataclass(frozen=True)
 class EnqueueJobResult:
     """Result of trying to enqueue a Slack ingestion job."""
 
@@ -68,8 +108,16 @@ class EnqueueJobResult:
     created: bool
 
 
+@dataclass(frozen=True)
+class EnqueueQAJobResult:
+    """Result of trying to enqueue a Slack Q&A job."""
+
+    job: QAJob
+    created: bool
+
+
 class SQLiteOperationalState:
-    """SQLite-backed store for Slack event and ingestion-job state."""
+    """SQLite-backed store for Slack event, ingestion-job, and Q&A-job state."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path.expanduser()
@@ -126,6 +174,50 @@ class SQLiteOperationalState:
                     started_at TEXT,
                     finished_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS slack_qa_events (
+                    event_id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    enterprise_id TEXT,
+                    team_id TEXT,
+                    context_team_id TEXT,
+                    channel_id TEXT NOT NULL,
+                    channel_type TEXT NOT NULL,
+                    user_id TEXT,
+                    event_ts TEXT NOT NULL,
+                    message_ts TEXT NOT NULL,
+                    thread_ts TEXT,
+                    raw_payload_json TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    duplicate_of_event_id TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS qa_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    slack_event_id TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    enterprise_id TEXT,
+                    team_id TEXT,
+                    context_team_id TEXT,
+                    channel_id TEXT NOT NULL,
+                    channel_type TEXT NOT NULL,
+                    user_id TEXT,
+                    event_ts TEXT NOT NULL,
+                    message_ts TEXT NOT NULL,
+                    thread_ts TEXT,
+                    question_text TEXT NOT NULL,
+                    search_query TEXT,
+                    answer_text TEXT,
+                    citations_json TEXT NOT NULL DEFAULT '[]',
+                    slack_initial_message_ts TEXT,
+                    slack_result_message_ts TEXT,
+                    error_stage TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT
+                );
                 """
             )
 
@@ -172,6 +264,55 @@ class SQLiteOperationalState:
                     event.message_ts,
                     event.thread_ts,
                     event.file_id,
+                    json.dumps(event.raw_payload, sort_keys=True),
+                    timestamp,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def record_slack_qa_event(
+        self,
+        event: SlackQAEvent,
+        *,
+        received_at: datetime | None = None,
+    ) -> bool:
+        """Persist a Slack Q&A event wrapper. Returns False for duplicates."""
+
+        self.initialize()
+        timestamp = _timestamp(received_at)
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO slack_qa_events (
+                    event_id,
+                    event_type,
+                    enterprise_id,
+                    team_id,
+                    context_team_id,
+                    channel_id,
+                    channel_type,
+                    user_id,
+                    event_ts,
+                    message_ts,
+                    thread_ts,
+                    raw_payload_json,
+                    received_at,
+                    duplicate_of_event_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    event.event_id,
+                    event.event_type,
+                    event.enterprise_id,
+                    event.team_id,
+                    event.context_team_id,
+                    event.channel_id,
+                    event.channel_type,
+                    event.user_id,
+                    event.event_ts,
+                    event.message_ts,
+                    event.thread_ts,
                     json.dumps(event.raw_payload, sort_keys=True),
                     timestamp,
                 ),
@@ -256,6 +397,68 @@ class SQLiteOperationalState:
             raise RuntimeError("Failed to create or load Slack ingestion job")
         return EnqueueJobResult(job=_job_from_row(row), created=cursor.rowcount == 1)
 
+    def enqueue_qa_job(
+        self,
+        event: SlackQAEvent,
+        *,
+        created_at: datetime | None = None,
+    ) -> EnqueueQAJobResult:
+        """Create or return the idempotent Q&A job for a Slack question."""
+
+        self.initialize()
+        timestamp = _timestamp(created_at)
+        job_id = _qa_job_id(event.dedupe_key)
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO qa_jobs (
+                    job_id,
+                    status,
+                    slack_event_id,
+                    dedupe_key,
+                    enterprise_id,
+                    team_id,
+                    context_team_id,
+                    channel_id,
+                    channel_type,
+                    user_id,
+                    event_ts,
+                    message_ts,
+                    thread_ts,
+                    question_text,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    QAJobStatus.QUEUED.value,
+                    event.event_id,
+                    event.dedupe_key,
+                    event.enterprise_id,
+                    event.team_id,
+                    event.context_team_id,
+                    event.channel_id,
+                    event.channel_type,
+                    event.user_id,
+                    event.event_ts,
+                    event.message_ts,
+                    event.thread_ts,
+                    event.question_text,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                _SELECT_QA_JOB_SQL + " WHERE dedupe_key = ?",
+                (event.dedupe_key,),
+            ).fetchone()
+
+        if row is None:
+            raise RuntimeError("Failed to create or load Slack Q&A job")
+        return EnqueueQAJobResult(
+            job=_qa_job_from_row(row), created=cursor.rowcount == 1
+        )
+
     def claim_next_queued_job(
         self,
         *,
@@ -320,6 +523,48 @@ class SQLiteOperationalState:
         if claimed is None:
             raise RuntimeError(f"Claimed job disappeared: {job.job_id}")
         return _job_from_row(claimed)
+
+    def claim_next_queued_qa_job(
+        self,
+        *,
+        started_at: datetime | None = None,
+    ) -> QAJob | None:
+        """Claim the oldest queued Q&A job for processing."""
+
+        self.initialize()
+        timestamp = _timestamp(started_at)
+        with self._connection() as connection:
+            row = connection.execute(
+                _SELECT_QA_JOB_SQL + " WHERE status = ? ORDER BY created_at LIMIT 1",
+                (QAJobStatus.QUEUED.value,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            job = _qa_job_from_row(row)
+            cursor = connection.execute(
+                """
+                UPDATE qa_jobs
+                SET status = ?, started_at = ?
+                WHERE job_id = ? AND status = ?
+                """,
+                (
+                    QAJobStatus.RUNNING.value,
+                    timestamp,
+                    job.job_id,
+                    QAJobStatus.QUEUED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = connection.execute(
+                _SELECT_QA_JOB_SQL + " WHERE job_id = ?",
+                (job.job_id,),
+            ).fetchone()
+
+        if claimed is None:
+            raise RuntimeError(f"Claimed Q&A job disappeared: {job.job_id}")
+        return _qa_job_from_row(claimed)
 
     def update_job_file_info(
         self,
@@ -416,6 +661,96 @@ class SQLiteOperationalState:
                 ),
             )
 
+    def update_qa_job_initial_message_ts(
+        self,
+        job_id: str,
+        *,
+        slack_initial_message_ts: str | None,
+    ) -> None:
+        """Persist the timestamp of the immediate Slack Q&A acknowledgement."""
+
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE qa_jobs
+                SET slack_initial_message_ts = ?
+                WHERE job_id = ?
+                """,
+                (slack_initial_message_ts, job_id),
+            )
+
+    def mark_qa_job_succeeded(
+        self,
+        job_id: str,
+        *,
+        search_query: str,
+        answer_text: str,
+        citations_json: str,
+        slack_result_message_ts: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> None:
+        """Mark a Q&A job as successfully answered."""
+
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE qa_jobs
+                SET status = ?,
+                    search_query = ?,
+                    answer_text = ?,
+                    citations_json = ?,
+                    slack_result_message_ts = ?,
+                    error_stage = NULL,
+                    error_message = NULL,
+                    finished_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    QAJobStatus.SUCCEEDED.value,
+                    search_query,
+                    answer_text,
+                    citations_json,
+                    slack_result_message_ts,
+                    _timestamp(finished_at),
+                    job_id,
+                ),
+            )
+
+    def mark_qa_job_failed(
+        self,
+        job_id: str,
+        *,
+        error_stage: str,
+        error_message: str,
+        slack_result_message_ts: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> None:
+        """Mark a Q&A job as failed."""
+
+        self.initialize()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE qa_jobs
+                SET status = ?,
+                    error_stage = ?,
+                    error_message = ?,
+                    slack_result_message_ts = ?,
+                    finished_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    QAJobStatus.FAILED.value,
+                    error_stage,
+                    error_message,
+                    slack_result_message_ts,
+                    _timestamp(finished_at),
+                    job_id,
+                ),
+            )
+
     def get_job(self, job_id: str) -> IngestionJob | None:
         """Return a job by ID."""
 
@@ -427,6 +762,17 @@ class SQLiteOperationalState:
             ).fetchone()
         return None if row is None else _job_from_row(row)
 
+    def get_qa_job(self, job_id: str) -> QAJob | None:
+        """Return a Q&A job by ID."""
+
+        self.initialize()
+        with self._connection() as connection:
+            row = connection.execute(
+                _SELECT_QA_JOB_SQL + " WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        return None if row is None else _qa_job_from_row(row)
+
     def list_jobs(self) -> tuple[IngestionJob, ...]:
         """Return all jobs ordered by creation time."""
 
@@ -436,6 +782,16 @@ class SQLiteOperationalState:
                 _SELECT_JOB_SQL + " ORDER BY created_at, job_id",
             ).fetchall()
         return tuple(_job_from_row(row) for row in rows)
+
+    def list_qa_jobs(self) -> tuple[QAJob, ...]:
+        """Return all Q&A jobs ordered by creation time."""
+
+        self.initialize()
+        with self._connection() as connection:
+            rows = connection.execute(
+                _SELECT_QA_JOB_SQL + " ORDER BY created_at, job_id",
+            ).fetchall()
+        return tuple(_qa_job_from_row(row) for row in rows)
 
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +839,35 @@ SELECT
     started_at,
     finished_at
 FROM ingestion_jobs
+"""
+
+_SELECT_QA_JOB_SQL = """
+SELECT
+    job_id,
+    status,
+    slack_event_id,
+    dedupe_key,
+    enterprise_id,
+    team_id,
+    context_team_id,
+    channel_id,
+    channel_type,
+    user_id,
+    event_ts,
+    message_ts,
+    thread_ts,
+    question_text,
+    search_query,
+    answer_text,
+    citations_json,
+    slack_initial_message_ts,
+    slack_result_message_ts,
+    error_stage,
+    error_message,
+    created_at,
+    started_at,
+    finished_at
+FROM qa_jobs
 """
 
 
@@ -590,6 +975,35 @@ def _job_from_row(row: sqlite3.Row) -> IngestionJob:
     )
 
 
+def _qa_job_from_row(row: sqlite3.Row) -> QAJob:
+    return QAJob(
+        job_id=str(row["job_id"]),
+        status=QAJobStatus(str(row["status"])),
+        slack_event_id=str(row["slack_event_id"]),
+        dedupe_key=str(row["dedupe_key"]),
+        enterprise_id=_optional_str(row["enterprise_id"]),
+        team_id=_optional_str(row["team_id"]),
+        context_team_id=_optional_str(row["context_team_id"]),
+        channel_id=str(row["channel_id"]),
+        channel_type=str(row["channel_type"]),
+        user_id=_optional_str(row["user_id"]),
+        event_ts=str(row["event_ts"]),
+        message_ts=str(row["message_ts"]),
+        thread_ts=_optional_str(row["thread_ts"]),
+        question_text=str(row["question_text"]),
+        search_query=_optional_str(row["search_query"]),
+        answer_text=_optional_str(row["answer_text"]),
+        citations_json=str(row["citations_json"]),
+        slack_initial_message_ts=_optional_str(row["slack_initial_message_ts"]),
+        slack_result_message_ts=_optional_str(row["slack_result_message_ts"]),
+        error_stage=_optional_str(row["error_stage"]),
+        error_message=_optional_str(row["error_message"]),
+        created_at=str(row["created_at"]),
+        started_at=_optional_str(row["started_at"]),
+        finished_at=_optional_str(row["finished_at"]),
+    )
+
+
 def _timestamp(value: datetime | None) -> str:
     return format_datetime(value or datetime.now(UTC))
 
@@ -597,6 +1011,11 @@ def _timestamp(value: datetime | None) -> str:
 def _job_id(dedupe_key: str) -> str:
     digest = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
     return f"job-{digest[:16]}"
+
+
+def _qa_job_id(dedupe_key: str) -> str:
+    digest = hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
+    return f"qa-job-{digest[:16]}"
 
 
 def _optional_str(value: object) -> str | None:

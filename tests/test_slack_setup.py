@@ -27,6 +27,8 @@ def test_slack_setup_check_passes_with_expected_mocked_clients() -> None:
     assert "PASS: files.info scope - file_not_found" in rendered
     assert "PASS: app token apps.connections.open - websocket url returned" in rendered
     assert "PASS: app manifest Socket Mode" in rendered
+    assert "PASS: app manifest App Home Messages tab" in rendered
+    assert "PASS: app manifest App Home Messages writable" in rendered
     assert "PASS: app manifest bot events" in rendered
     assert "PASS: app manifest bot scopes" in rendered
 
@@ -58,6 +60,50 @@ def test_slack_setup_check_reports_missing_app_manifest_events() -> None:
     rendered = render_slack_setup_check(result)
     assert "FAIL: app manifest bot events" in rendered
     assert "missing=message.channels" in rendered
+    assert "message.im" in rendered
+
+
+def test_slack_setup_check_reports_missing_app_home_messages() -> None:
+    result = run_slack_setup_check(
+        _settings(),
+        bot_client=_FakeSetupBotClient(),
+        app_client=_FakeSetupAppClient(),
+        config_client=_FakeSetupConfigClient(
+            app_home={
+                "home_tab_enabled": True,
+                "messages_tab_enabled": False,
+                "messages_tab_read_only_enabled": True,
+            },
+        ),
+    )
+
+    assert result.ok is False
+    rendered = render_slack_setup_check(result)
+    assert "FAIL: app manifest App Home Messages tab" in rendered
+    assert "messages_tab_enabled=False" in rendered
+    assert "FAIL: app manifest App Home Messages writable" in rendered
+    assert "messages_tab_read_only_enabled=True" in rendered
+
+
+def test_slack_setup_check_reports_missing_qa_scope() -> None:
+    result = run_slack_setup_check(
+        _settings(),
+        bot_client=_FakeSetupBotClient(),
+        app_client=_FakeSetupAppClient(),
+        config_client=_FakeSetupConfigClient(
+            bot_scopes=[
+                "chat:write",
+                "files:read",
+                "channels:read",
+                "channels:history",
+            ],
+        ),
+    )
+
+    assert result.ok is False
+    rendered = render_slack_setup_check(result)
+    assert "FAIL: app manifest bot scopes" in rendered
+    assert "missing=im:history" in rendered
 
 
 def test_slack_setup_check_reports_missing_app_manifest_credentials() -> None:
@@ -152,8 +198,30 @@ class _FakeSetupAppClient:
 
 
 class _FakeSetupConfigClient:
-    def __init__(self, *, bot_events: list[str] | None = None) -> None:
-        self.bot_events = bot_events or ["file_shared", "message.channels"]
+    def __init__(
+        self,
+        *,
+        bot_events: list[str] | None = None,
+        bot_scopes: list[str] | None = None,
+        app_home: dict[str, object] | None = None,
+    ) -> None:
+        self.bot_events = bot_events or [
+            "file_shared",
+            "message.channels",
+            "message.im",
+        ]
+        self.bot_scopes = bot_scopes or [
+            "chat:write",
+            "files:read",
+            "channels:read",
+            "channels:history",
+            "im:history",
+        ]
+        self.app_home = app_home or {
+            "home_tab_enabled": True,
+            "messages_tab_enabled": True,
+            "messages_tab_read_only_enabled": False,
+        }
 
     def apps_manifest_export(self, **kwargs: object) -> dict[str, object]:
         assert kwargs == {"app_id": "A123"}
@@ -163,14 +231,10 @@ class _FakeSetupConfigClient:
                 "display_information": {"name": "Slack Vault Dev"},
                 "oauth_config": {
                     "scopes": {
-                        "bot": [
-                            "chat:write",
-                            "files:read",
-                            "channels:read",
-                            "channels:history",
-                        ]
+                        "bot": self.bot_scopes,
                     }
                 },
+                "features": {"app_home": self.app_home},
                 "settings": {
                     "event_subscriptions": {"bot_events": self.bot_events},
                     "socket_mode_enabled": True,

@@ -1,4 +1,4 @@
-"""Slack event normalization for ingestion."""
+"""Slack event normalization for ingestion and Q&A."""
 
 from __future__ import annotations
 
@@ -42,6 +42,40 @@ class SlackIngestionEvent:
         )
 
 
+@dataclass(frozen=True)
+class SlackQAEvent:
+    """Normalized Slack event that can enqueue one vault Q&A job."""
+
+    event_id: str
+    event_type: str
+    enterprise_id: str | None
+    team_id: str | None
+    context_team_id: str | None
+    is_enterprise_install: bool
+    channel_id: str
+    channel_type: str
+    user_id: str | None
+    event_ts: str
+    message_ts: str
+    thread_ts: str | None
+    question_text: str
+    is_ext_shared_channel: bool
+    raw_payload: Mapping[str, object]
+
+    @property
+    def dedupe_key(self) -> str:
+        """Return the stable idempotency key for this Slack Q&A message."""
+
+        return "|".join(
+            (
+                self.enterprise_id or "",
+                self.team_id or "",
+                self.channel_id,
+                self.message_ts,
+            )
+        )
+
+
 def normalize_slack_ingestion_events(
     payload: Mapping[str, object],
     *,
@@ -74,6 +108,67 @@ def normalize_slack_ingestion_events(
         )
         return () if normalized is None else (normalized,)
     return ()
+
+
+def normalize_slack_qa_events(
+    payload: Mapping[str, object],
+    *,
+    allow_external_shared_channels: bool = False,
+) -> tuple[SlackQAEvent, ...]:
+    """Normalize a Slack Events API payload into Q&A events.
+
+    Unsupported, duplicate-prone, bot-authored, or non-DM payloads return an
+    empty tuple. Mention-based Q&A is intentionally left for the next phase.
+    """
+
+    event = _mapping(payload.get("event"))
+    if event is None:
+        return ()
+
+    event_type = _string(event.get("type"))
+    if event_type != "message":
+        return ()
+    if _is_external_shared_channel(payload) and not allow_external_shared_channels:
+        return ()
+    if _string(event.get("channel_type")) != "im":
+        return ()
+    if (
+        event.get("bot_id") is not None
+        or event.get("bot_profile") is not None
+        or _string(event.get("subtype")) == "bot_message"
+    ):
+        return ()
+    if _message_file_ids(event):
+        return ()
+
+    channel_id = _string(event.get("channel"))
+    question_text = _blank_to_none(_string(event.get("text")))
+    event_ts = _string(event.get("event_ts")) or _string(payload.get("event_time"))
+    message_ts = _string(event.get("ts")) or event_ts
+    if channel_id is None or question_text is None or event_ts is None:
+        return ()
+    if message_ts is None:
+        return ()
+
+    return (
+        SlackQAEvent(
+            event_id=_event_id(payload, event_type="message.im", event_ts=event_ts),
+            event_type="message.im",
+            enterprise_id=_enterprise_id(payload),
+            team_id=_team_id(payload, event),
+            context_team_id=_string(payload.get("context_team_id")),
+            is_enterprise_install=_is_enterprise_install(payload),
+            channel_id=channel_id,
+            channel_type="im",
+            user_id=_string(event.get("user")),
+            event_ts=event_ts,
+            message_ts=message_ts,
+            thread_ts=_string(event.get("thread_ts")),
+            question_text=question_text,
+            is_ext_shared_channel=_is_external_shared_channel(payload),
+            raw_payload=payload,
+        ),
+    )
 
 
 def _normalize_message_event(
