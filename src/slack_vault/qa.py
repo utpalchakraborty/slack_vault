@@ -11,9 +11,28 @@ from slack_vault.ai import AIPromptCacheConfig, AITextProvider, AITextRequest
 from slack_vault.retrieval import AnswerContext, AnswerContextItem
 
 DEFAULT_QA_MAX_OUTPUT_TOKENS = 4_096
+DEFAULT_QA_SEARCH_PLAN_MAX_OUTPUT_TOKENS = 1_024
 NO_EVIDENCE_ANSWER = (
     "I could not find enough relevant vault context to answer this question."
 )
+QA_SEARCH_PLAN_SYSTEM_PROMPT = """You translate user questions into Obsidian vault
+search queries.
+
+Return a single JSON object with exactly this shape:
+{
+  "queries": ["concise keyword query", "alternate concise keyword query"]
+}
+
+Rules:
+- Return 2 to 5 search queries.
+- Each query should be short and keyword-focused, not a full sentence.
+- Prefer entity names, document names, acronyms, jurisdictions, product names,
+  dates, and domain-specific nouns.
+- Include useful synonyms or expansions when the question contains an
+  abbreviation, such as both "NJ" and "New Jersey".
+- Do not answer the question.
+- Do not include explanations outside JSON.
+"""
 QA_SYSTEM_PROMPT = """You answer questions by synthesizing Obsidian vault search hits.
 
 Return a single JSON object with exactly this shape:
@@ -73,6 +92,33 @@ class AnswerResult:
         )
 
 
+@dataclass(frozen=True)
+class SearchQueryPlan:
+    """AI-planned Obsidian search queries for a user question."""
+
+    question: str
+    queries: tuple[str, ...]
+    planner_name: str
+    model: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+class SearchQueryPlanner(Protocol):
+    """Interface for AI query planning before Obsidian search."""
+
+    @property
+    def name(self) -> str:
+        """Return the planner identifier."""
+        ...
+
+    def plan(self, question: str) -> SearchQueryPlan:
+        """Return Obsidian search queries for a question."""
+        ...
+
+
 class QuestionAnswerer(Protocol):
     """Interface for local vault answer generators."""
 
@@ -84,6 +130,43 @@ class QuestionAnswerer(Protocol):
     def answer(self, context: AnswerContext) -> AnswerResult:
         """Answer a question from retrieved context."""
         ...
+
+
+@dataclass(frozen=True)
+class AIObsidianSearchQueryPlanner:
+    """AI-backed planner for Obsidian CLI search terms."""
+
+    provider: AITextProvider
+    max_output_tokens: int = DEFAULT_QA_SEARCH_PLAN_MAX_OUTPUT_TOKENS
+    prompt_cache: AIPromptCacheConfig | None = AIPromptCacheConfig(
+        automatic=False,
+        cache_system_prompt=True,
+    )
+    name: str = "ai"
+
+    def plan(self, question: str) -> SearchQueryPlan:
+        """Generate multiple concise Obsidian search queries."""
+
+        response = self.provider.complete_text(
+            AITextRequest(
+                system_prompt=QA_SEARCH_PLAN_SYSTEM_PROMPT,
+                user_prompt=f"Question: {question}",
+                max_output_tokens=self.max_output_tokens,
+                temperature=0,
+                prompt_cache=self.prompt_cache,
+            )
+        )
+        queries = _parse_search_queries(response.text)
+        return SearchQueryPlan(
+            question=question,
+            queries=queries,
+            planner_name=self.name,
+            model=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cache_creation_input_tokens=response.cache_creation_input_tokens,
+            cache_read_input_tokens=response.cache_read_input_tokens,
+        )
 
 
 @dataclass(frozen=True)
@@ -191,12 +274,38 @@ def _answer_user_prompt(context: AnswerContext) -> str:
     return "\n".join(
         [
             f"Question: {context.question}",
-            f"Obsidian search query: {context.search_query}",
+            f"Obsidian search queries: {context.search_query}",
             "",
             "Obsidian vault search hits JSON:",
             json.dumps(context_payload, indent=2, sort_keys=True),
         ]
     )
+
+
+def _parse_search_queries(response_text: str) -> tuple[str, ...]:
+    parsed: object = json.loads(_strip_json_fence(response_text))
+    if not isinstance(parsed, dict):
+        raise ValueError("Search query response must be a JSON object")
+
+    value = parsed.get("queries")
+    if not isinstance(value, list):
+        raise ValueError('Search query response field "queries" must be a list')
+
+    queries: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("Search query response must contain non-empty strings")
+        query = " ".join(item.split())
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+
+    if not queries:
+        raise ValueError("Search query response must include at least one query")
+    return tuple(queries)
 
 
 def _parse_answer_candidate(response_text: str) -> _AnswerCandidate:

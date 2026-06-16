@@ -65,6 +65,11 @@ These choices are defaults for the POC and can be revised before coding.
   provenance records with status, counts, and artifact pointers.
 - The local log path is read from `SLACK_VAULT_LOG_PATH` and defaults to
   `.data/logs/slack-vault.log` in the app repository.
+- Full AI provider prompt/response interaction records are written as JSONL to
+  `SLACK_VAULT_AI_INTERACTION_LOG_PATH`, which defaults to
+  `.data/logs/ai-interactions.jsonl` outside Git. The interaction log rotates
+  daily, gzip-compresses rotated files, and uses the same retained backup count
+  as the app log.
 - Logs rotate daily at midnight, rotated logs are gzip-compressed, and the
   retained rotated-log count is read from `SLACK_VAULT_LOG_BACKUP_COUNT`.
 - The Phase 6 SQLite operational state path is read from
@@ -126,6 +131,10 @@ Status as of 2026-06-15:
   `.data/logs/slack-vault.log` by default, rotates at midnight, gzip-compresses
   rotated logs, and logs archive, extraction, enhancement, source-record, and
   synthesis lifecycle events.
+- AI text provider calls created from settings now append request, response, and
+  error JSONL records to `.data/logs/ai-interactions.jsonl` by default so prompt
+  and answer behavior can be reviewed and tuned later. The interaction log uses
+  the same daily gzip rotation and backup retention policy as the app log.
 - Live Git-commit smoke testing showed that Anthropic 429 rate limits must not
   produce source-record-only commits when synthesis was requested. AI text calls
   now retry transient provider failures, requested enhancement or synthesis
@@ -801,6 +810,9 @@ commands, source-record metadata rendering, and the reusable file-ingest path.
 ### Goal
 
 Expose vault question answering through Slack.
+
+Detailed planning for this phase lives in
+[`docs/slack-qa-plan.md`](slack-qa-plan.md).
 
 ### Deliverables
 

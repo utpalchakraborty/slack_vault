@@ -15,6 +15,7 @@ from slack_vault.git_vault import GitVaultCommitter
 from slack_vault.ingest import IngestProcessingError, ingest_local_file
 from slack_vault.log_setup import configure_logging
 from slack_vault.qa import (
+    AIObsidianSearchQueryPlanner,
     AnswerResult,
     AnthropicQuestionAnswerer,
     render_answer_result,
@@ -250,6 +251,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "ask":
+        ai_provider = RetryingAITextProvider(
+            AnthropicAIProvider.from_settings(settings),
+            retry=settings.ai.retry,
+        )
+        search_plan = AIObsidianSearchQueryPlanner(ai_provider).plan(args.question)
         vault_name = (
             settings.obsidian_cli_vault_name or settings.obsidian_vault_path.name
         )
@@ -257,13 +263,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             load_vault_index(settings.obsidian_vault_path),
             args.question,
             search_provider=ObsidianCliSearch(vault_name=vault_name),
+            search_queries=search_plan.queries,
             limit=args.limit,
         )
         if context.items:
-            ai_provider = RetryingAITextProvider(
-                AnthropicAIProvider.from_settings(settings),
-                retry=settings.ai.retry,
-            )
             result = AnthropicQuestionAnswerer(ai_provider).answer(context)
         else:
             result = AnswerResult.no_evidence_result(context)

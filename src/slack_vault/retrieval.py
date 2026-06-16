@@ -331,6 +331,36 @@ def obsidian_search(
     return _search_results_from_paths(index, hit_paths, terms, limit=limit)
 
 
+def obsidian_search_many(
+    index: VaultIndex,
+    queries: Sequence[str],
+    *,
+    search_provider: ObsidianSearchProvider,
+    limit: int = DEFAULT_RETRIEVAL_LIMIT,
+) -> tuple[RetrievalResult, ...]:
+    """Search Obsidian with multiple AI-planned queries and merge hit paths."""
+
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    normalized_queries = _normalized_search_queries(queries)
+    if not normalized_queries:
+        return ()
+
+    hit_paths: list[Path] = []
+    seen_paths: set[str] = set()
+    for query in normalized_queries:
+        for hit_path in search_provider.search(query, limit=limit):
+            hit_key = hit_path.as_posix()
+            if hit_key in seen_paths:
+                continue
+            seen_paths.add(hit_key)
+            hit_paths.append(hit_path)
+
+    terms = _query_terms(" ".join(normalized_queries))
+    return _search_results_from_paths(index, tuple(hit_paths), terms, limit=limit)
+
+
 def _search_results_from_paths(
     index: VaultIndex,
     hit_paths: tuple[Path, ...],
@@ -405,16 +435,22 @@ def _notes_for_obsidian_hit(
 
 
 def _parse_obsidian_search_paths(stdout: str) -> tuple[Path, ...]:
-    if stdout.strip() == "No matches found.":
+    stripped = stdout.strip()
+    if stripped in {"", "No matches found."}:
         return ()
+    if stripped == "Vault not found.":
+        raise ObsidianCliError(
+            "Obsidian CLI could not find the configured vault. "
+            "Open the vault in Obsidian or set SLACK_VAULT_OBSIDIAN_CLI_VAULT "
+            "only if Obsidian registered it under a different name."
+        )
 
     try:
-        parsed: object = json.loads(stdout)
+        parsed: object = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        snippet = stdout.strip()
         raise ObsidianCliError(
             "Obsidian CLI search did not return JSON"
-            + (f": {snippet}" if snippet else ".")
+            + (f": {stripped}" if stripped else ".")
         ) from exc
 
     if not isinstance(parsed, list):
@@ -435,15 +471,21 @@ def build_answer_context(
     question: str,
     *,
     search_provider: ObsidianSearchProvider,
+    search_queries: Sequence[str] | None = None,
     limit: int = DEFAULT_RETRIEVAL_LIMIT,
     excerpt_limit: int = DEFAULT_EXCERPT_LIMIT,
 ) -> AnswerContext:
     """Build compact, citation-aware context for answer generation."""
 
-    terms = _query_terms(question)
-    results = obsidian_search(
+    normalized_search_queries = (
+        _normalized_search_queries(search_queries)
+        if search_queries is not None
+        else (_obsidian_search_query(question),)
+    )
+    terms = _query_terms(" ".join((question, *normalized_search_queries)))
+    results = obsidian_search_many(
         index,
-        question,
+        normalized_search_queries,
         search_provider=search_provider,
         limit=limit,
     )
@@ -466,7 +508,7 @@ def build_answer_context(
     )
     return AnswerContext(
         question=question,
-        search_query=_obsidian_search_query(question),
+        search_query=", ".join(normalized_search_queries),
         items=items,
     )
 
@@ -602,6 +644,21 @@ def _query_terms(query: str) -> tuple[str, ...]:
 
 def _obsidian_search_query(question: str) -> str:
     return " ".join(_query_terms(question))
+
+
+def _normalized_search_queries(queries: Sequence[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        stripped = _normalize_space(query)
+        if not stripped:
+            continue
+        key = stripped.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(stripped)
+    return tuple(normalized)
 
 
 def _tokens(text: str) -> tuple[str, ...]:

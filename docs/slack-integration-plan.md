@@ -25,7 +25,7 @@ not required for Phase 6.
 
 ## Current Status
 
-Status as of 2026-06-15:
+Status as of 2026-06-16:
 
 - The unit-testable Phase 6 ingestion slice is implemented locally.
 - Live Slack setup preflight passes against the configured development app and
@@ -68,14 +68,13 @@ Status as of 2026-06-15:
   `make check` reports `155 passed, 2 skipped` with `90.27%` coverage.
 - Current live setup validation passes with configured Slack credentials:
   `make check-slack-setup`.
-- The next planned smoke test is deferred to 2026-06-16: upload a new document
-  to `#slack-vault-dev-ingest` while `make run-slack` is running and verify the
-  event-triggered worker launches, ingests the file, commits the generated vault
-  changes, and pushes that vault commit upstream.
-- Remaining Phase 6 work is the deferred event-triggered dev-channel smoke
-  test, a POC smoke test with an approved DOCX or PDF, plus any small
-  adjustments discovered from broader real Events API payloads and Slack file
-  download behavior.
+- The 2026-06-16 event-triggered dev-channel smoke test passed: uploading a
+  document in Slack produced the receipt and processing notifications, the
+  document was processed and ingested, and the generated vault commit was pushed
+  upstream.
+- Remaining Phase 6 work is a POC smoke test with an approved DOCX or PDF, plus
+  any small adjustments discovered from broader real Events API payloads and
+  Slack file download behavior.
 
 ## Implemented Code Baseline
 
@@ -461,7 +460,7 @@ Recommended live-test levels:
    and confirm archive, source record, knowledge note, Git commit, and Slack
    result reply. This passed on 2026-06-15 with
    `sample_company_filings_status.md`.
-5. Event-triggered worker smoke test, planned for 2026-06-16:
+5. Event-triggered worker smoke test: passed on 2026-06-16.
    - Start `make run-slack` from `/Users/utpalrohan/code/slack_vault`.
    - Upload a new sanitized document to `#slack-vault-dev-ingest`.
    - Confirm the bot posts the queued reply without manually running

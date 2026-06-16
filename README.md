@@ -96,11 +96,12 @@ To ask a local question against generated vault notes:
 make ask QUESTION="What does the vault say about the operating model?"
 ```
 
-Answers use Obsidian CLI search over the configured vault, then ask the
-configured Anthropic model to synthesize only from the returned vault search
-hits. Output includes Markdown-style citations back to vault notes and source
-records. If no relevant context is found, the command returns a deterministic
-no-evidence answer without calling the AI provider.
+Answers first ask the configured Anthropic model to plan concise Obsidian search
+queries, run those searches over the configured vault, then ask Anthropic to
+synthesize only from the returned vault search hits. Output includes
+Markdown-style citations back to vault notes and source records. If no relevant
+context is found, the command returns a deterministic no-evidence answer after
+the search-planning step.
 
 The Obsidian desktop app must be running and its CLI must be registered on
 `PATH`. Enable it in Obsidian Settings > General > Command line interface. The
@@ -121,6 +122,13 @@ default logs rotate every day at midnight, rotated logs are gzip-compressed, and
 the most recent 14 rotated files are retained. The path, level, and retention
 can be changed with `SLACK_VAULT_LOG_PATH`, `SLACK_VAULT_LOG_LEVEL`, and
 `SLACK_VAULT_LOG_BACKUP_COUNT`.
+
+AI provider interactions are also written to rotating JSONL for later prompt and
+answer tuning. The default path is `.data/logs/ai-interactions.jsonl`,
+configurable via `SLACK_VAULT_AI_INTERACTION_LOG_PATH`. It rotates daily,
+gzip-compresses rotated files, and uses the same `SLACK_VAULT_LOG_BACKUP_COUNT`
+retention setting as the app log. These records include full prompts and model
+responses, so keep them outside Git and treat them as sensitive runtime data.
 
 Sequential automatic ingest flows use
 `SLACK_VAULT_AUTOMATIC_INGEST_DELAY_SECONDS` as the delay between documents.

@@ -9,6 +9,7 @@ from slack_vault.config import (
     ANTHROPIC_HAIKU_45_MAX_INPUT_TOKENS,
     ANTHROPIC_HAIKU_45_MAX_OUTPUT_TOKENS,
     ANTHROPIC_HAIKU_45_MODEL,
+    DEFAULT_AI_INTERACTION_LOG_PATH,
     DEFAULT_AI_RETRY_BACKOFF_MULTIPLIER,
     DEFAULT_AI_RETRY_INITIAL_DELAY_SECONDS,
     DEFAULT_AI_RETRY_MAX_ATTEMPTS,
@@ -56,6 +57,7 @@ CONFIG_ENV_KEYS = (
     "SLACK_VAULT_AI_RETRY_MAX_DELAY_SECONDS",
     "SLACK_VAULT_AI_RETRY_BACKOFF_MULTIPLIER",
     "SLACK_VAULT_LOG_PATH",
+    "SLACK_VAULT_AI_INTERACTION_LOG_PATH",
     "SLACK_VAULT_LOG_LEVEL",
     "SLACK_VAULT_LOG_BACKUP_COUNT",
     "SLACK_VAULT_OPERATIONAL_DB_PATH",
@@ -99,6 +101,7 @@ def test_settings_default_to_local_slack_obsidian_and_anthropic() -> None:
     assert settings.ai.retry.max_delay_seconds == DEFAULT_AI_RETRY_MAX_DELAY_SECONDS
     assert settings.ai.retry.backoff_multiplier == DEFAULT_AI_RETRY_BACKOFF_MULTIPLIER
     assert settings.logging.path == DEFAULT_LOG_PATH
+    assert settings.logging.ai_interaction_path == DEFAULT_AI_INTERACTION_LOG_PATH
     assert settings.logging.level == DEFAULT_LOG_LEVEL
     assert settings.logging.backup_count == DEFAULT_LOG_BACKUP_COUNT
     assert settings.operational.db_path == DEFAULT_OPERATIONAL_DB_PATH
@@ -142,6 +145,7 @@ def test_settings_read_environment_values() -> None:
             "SLACK_VAULT_AI_RETRY_MAX_DELAY_SECONDS": "9.5",
             "SLACK_VAULT_AI_RETRY_BACKOFF_MULTIPLIER": "1.25",
             "SLACK_VAULT_LOG_PATH": "~/logs/slack-vault.log",
+            "SLACK_VAULT_AI_INTERACTION_LOG_PATH": "~/logs/ai-interactions.jsonl",
             "SLACK_VAULT_LOG_LEVEL": "debug",
             "SLACK_VAULT_LOG_BACKUP_COUNT": "7",
             "SLACK_VAULT_OPERATIONAL_DB_PATH": "~/state/slack-vault.sqlite3",
@@ -179,6 +183,10 @@ def test_settings_read_environment_values() -> None:
     assert settings.ai.retry.max_delay_seconds == 9.5
     assert settings.ai.retry.backoff_multiplier == 1.25
     assert settings.logging.path == Path("~/logs/slack-vault.log").expanduser()
+    assert (
+        settings.logging.ai_interaction_path
+        == Path("~/logs/ai-interactions.jsonl").expanduser()
+    )
     assert settings.logging.level == "DEBUG"
     assert settings.logging.backup_count == 7
     assert (
@@ -268,6 +276,9 @@ def test_settings_json_redacts_secrets() -> None:
     assert payload["ai"]["anthropic_api_key"] == "sk-a...-key"
     assert payload["ai"]["retry"]["max_attempts"] == 3
     assert payload["logging"]["path"] == ".data/logs/slack-vault.log"
+    assert (
+        payload["logging"]["ai_interaction_path"] == ".data/logs/ai-interactions.jsonl"
+    )
     assert payload["logging"]["level"] == "INFO"
     assert payload["operational"]["db_path"] == ".data/slack-vault.sqlite3"
     assert payload["obsidian_cli_vault_name"] is None

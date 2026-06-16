@@ -8,7 +8,9 @@ import pytest
 from slack_vault.ai import AITextRequest, AITextResponse
 from slack_vault.qa import (
     NO_EVIDENCE_ANSWER,
+    QA_SEARCH_PLAN_SYSTEM_PROMPT,
     QA_SYSTEM_PROMPT,
+    AIObsidianSearchQueryPlanner,
     AnswerCitation,
     AnswerResult,
     AnthropicQuestionAnswerer,
@@ -49,7 +51,7 @@ def test_anthropic_question_answerer_assembles_prompt_and_parses_answer() -> Non
     request = provider.requests[0]
     assert request.system_prompt == QA_SYSTEM_PROMPT
     assert "Question: What does Project Alpha need?" in request.user_prompt
-    assert "Obsidian search query: project alpha" in request.user_prompt
+    assert "Obsidian search queries: project alpha" in request.user_prompt
     assert "Obsidian vault search hits JSON" in request.user_prompt
     assert '"citation_id": 1' in request.user_prompt
     assert '"note_path": "10 Knowledge/project-alpha-plan.md"' in request.user_prompt
@@ -57,6 +59,56 @@ def test_anthropic_question_answerer_assembles_prompt_and_parses_answer() -> Non
     assert '"tags": [' in request.user_prompt
     assert '"wikilinks": [' in request.user_prompt
     assert request.temperature == 0
+
+
+def test_ai_search_query_planner_parses_search_queries() -> None:
+    provider = _FakeTextProvider(
+        json.dumps(
+            {
+                "queries": [
+                    "NJ company filings",
+                    "New Jersey company filings",
+                    "Garden State Meridian Services",
+                ]
+            }
+        )
+    )
+
+    result = AIObsidianSearchQueryPlanner(provider).plan(
+        "What info do you have on NJ company filings?"
+    )
+
+    assert result.queries == (
+        "NJ company filings",
+        "New Jersey company filings",
+        "Garden State Meridian Services",
+    )
+    assert result.model == "fake-model"
+    request = provider.requests[0]
+    assert request.system_prompt == QA_SEARCH_PLAN_SYSTEM_PROMPT
+    assert request.user_prompt == (
+        "Question: What info do you have on NJ company filings?"
+    )
+    assert request.temperature == 0
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_error"),
+    [
+        ([], "Search query response must be a JSON object"),
+        ({}, 'Search query response field "queries" must be a list'),
+        ({"queries": [""]}, "must contain non-empty strings"),
+        ({"queries": [1]}, "must contain non-empty strings"),
+    ],
+)
+def test_ai_search_query_planner_rejects_invalid_query_shapes(
+    payload: object,
+    expected_error: str,
+) -> None:
+    provider = _FakeTextProvider(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=expected_error):
+        AIObsidianSearchQueryPlanner(provider).plan("What should I search?")
 
 
 def test_question_answerer_returns_no_evidence_without_calling_provider() -> None:

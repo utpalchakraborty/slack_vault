@@ -12,6 +12,7 @@ from slack_vault.retrieval import (
     build_answer_context,
     load_vault_index,
     obsidian_search,
+    obsidian_search_many,
     split_frontmatter,
 )
 
@@ -122,6 +123,45 @@ def test_obsidian_search_uses_cli_hit_order_and_source_record_expansion(
     assert source_id_results[0].note.title == "Project Alpha Plan"
 
 
+def test_obsidian_search_many_merges_ai_planned_query_hits(
+    tmp_path: Path,
+) -> None:
+    _write_knowledge_note(
+        tmp_path,
+        slug="new-jersey-company-filings",
+        title="New Jersey Company Filings",
+        source_ids=("source-nj",),
+        topics=("New Jersey filings",),
+        body="Garden State Meridian Services has low company filing risk.",
+    )
+    _write_source_record(
+        tmp_path,
+        source_id="source-nj",
+        title="sample_nj_company_filings_status.md",
+        original_filename="sample_nj_company_filings_status.md",
+    )
+    search_provider = _FakeObsidianSearchByQuery(
+        {
+            "NJ company filings": (Path("20 Sources/sources/source-nj.md"),),
+            "New Jersey company filings": (
+                Path("10 Knowledge/new-jersey-company-filings.md"),
+            ),
+        }
+    )
+
+    results = obsidian_search_many(
+        load_vault_index(tmp_path),
+        ("NJ company filings", "New Jersey company filings"),
+        search_provider=search_provider,
+    )
+
+    assert [result.note.title for result in results] == ["New Jersey Company Filings"]
+    assert search_provider.calls == [
+        ("NJ company filings", 5),
+        ("New Jersey company filings", 5),
+    ]
+
+
 def test_build_answer_context_includes_source_paths_and_matching_excerpt(
     tmp_path: Path,
 ) -> None:
@@ -150,6 +190,7 @@ def test_build_answer_context_includes_source_paths_and_matching_excerpt(
         search_provider=_FakeObsidianSearch(
             (Path("10 Knowledge/hubspot-current-state.md"),)
         ),
+        search_queries=("HubSpot account fields", "duplicated account fields"),
     )
 
     assert len(context.items) == 1
@@ -162,7 +203,7 @@ def test_build_answer_context_includes_source_paths_and_matching_excerpt(
         "20 Sources/sources/source-hubspot.md"
     )
     assert "duplicated account fields" in item.excerpt
-    assert context.search_query == "hubspot account fields duplicated"
+    assert context.search_query == ("HubSpot account fields, duplicated account fields")
 
 
 def test_build_answer_context_returns_empty_when_query_has_no_match(
@@ -240,8 +281,9 @@ def test_obsidian_cli_search_reports_missing_cli(
 @pytest.mark.parametrize(
     ("stdout", "expected_error"),
     [
+        ("", None),
         ("No matches found.", None),
-        ("Vault not found.", "did not return JSON"),
+        ("Vault not found.", "could not find the configured vault"),
         ("{}", "must be a list of paths"),
         ('["ok.md", 1]', "must contain only path strings"),
     ],
@@ -398,6 +440,16 @@ class _FakeObsidianSearch:
     def search(self, query: str, *, limit: int) -> tuple[Path, ...]:
         self.calls.append((query, limit))
         return self.paths[:limit]
+
+
+class _FakeObsidianSearchByQuery:
+    def __init__(self, paths_by_query: dict[str, tuple[Path, ...]]) -> None:
+        self.paths_by_query = paths_by_query
+        self.calls: list[tuple[str, int]] = []
+
+    def search(self, query: str, *, limit: int) -> tuple[Path, ...]:
+        self.calls.append((query, limit))
+        return self.paths_by_query.get(query, ())[:limit]
 
 
 class _FakeObsidianRunner:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gzip
+import json
 import os
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,7 @@ from anthropic.types.beta import (
 
 from slack_vault.ai import (
     ANTHROPIC_FILES_BETA,
+    AIInteractionLogger,
     AIPromptCacheConfig,
     AITextRequest,
     AITextResponse,
@@ -293,7 +296,170 @@ def test_anthropic_provider_from_settings_uses_configured_model_and_key() -> Non
 
     assert provider.model == "claude-test-model"
     assert provider.max_output_tokens == 123
+    assert provider.interaction_logger is not None
+    assert provider.interaction_logger.path == Path(".data/logs/ai-interactions.jsonl")
+    assert provider.interaction_logger.backup_count == 14
     assert "sk-ant-test-value" not in repr(provider)
+
+
+def test_anthropic_provider_logs_text_request_and_response(tmp_path: Path) -> None:
+    log_path = tmp_path / "ai-interactions.jsonl"
+    fake_client = _FakeAnthropicClient(
+        _anthropic_message(text="Logged OK", model="claude-test-model")
+    )
+    provider = AnthropicAIProvider(
+        api_key="sk-ant-secret-value",
+        model="claude-test-model",
+        max_output_tokens=64,
+        client=fake_client,
+        interaction_logger=AIInteractionLogger(log_path),
+    )
+
+    provider.complete_text(
+        AITextRequest(
+            system_prompt="Use logged responses.",
+            user_prompt="Say logged OK.",
+            max_output_tokens=12,
+            temperature=0,
+            prompt_cache=AIPromptCacheConfig(
+                ttl="1h",
+                cache_system_prompt=True,
+            ),
+        )
+    )
+
+    records = _jsonl_records(log_path)
+    assert [record["event"] for record in records] == ["request", "response"]
+    assert records[0]["interaction_id"] == records[1]["interaction_id"]
+    assert records[0]["provider"] == "anthropic"
+    assert records[0]["method"] == "complete_text"
+    assert records[0]["model"] == "claude-test-model"
+    assert records[0]["system_prompt"] == "Use logged responses."
+    assert records[0]["user_prompt"] == "Say logged OK."
+    assert records[0]["temperature"] == 0
+    assert records[0]["max_output_tokens"] == 12
+    assert records[0]["prompt_cache"] == {
+        "automatic": True,
+        "cache_system_prompt": True,
+        "cache_uploaded_files": False,
+        "enabled": True,
+        "ttl": "1h",
+    }
+    assert records[0]["files"] == []
+    assert records[1]["text"] == "Logged OK"
+    assert records[1]["input_tokens"] == 5
+    assert records[1]["output_tokens"] == 3
+    assert "sk-ant-secret-value" not in log_path.read_text(encoding="utf-8")
+
+
+def test_ai_interaction_logger_rotates_and_gzips_jsonl(tmp_path: Path) -> None:
+    log_path = tmp_path / "ai-interactions.jsonl"
+    interaction_logger = AIInteractionLogger(log_path, backup_count=1)
+    interaction_id = interaction_logger.log_request(
+        provider="anthropic",
+        method="complete_text",
+        model="claude-test-model",
+        max_output_tokens=12,
+        request=AITextRequest(
+            system_prompt="Old request.",
+            user_prompt="Say old.",
+        ),
+        prompt_cache=None,
+    )
+    old_timestamp = (datetime.now(UTC) - timedelta(days=2)).timestamp()
+    os.utime(log_path, (old_timestamp, old_timestamp))
+
+    interaction_logger.log_response(
+        interaction_id=interaction_id,
+        provider="anthropic",
+        method="complete_text",
+        response=_text_response("new response"),
+    )
+
+    rotated_logs = sorted(log_path.parent.glob("ai-interactions.jsonl.*.gz"))
+    assert len(rotated_logs) == 1
+    assert _jsonl_records(log_path)[0]["event"] == "response"
+    with gzip.open(rotated_logs[0], "rt", encoding="utf-8") as rotated_file:
+        rotated_records = [
+            json.loads(line) for line in rotated_file.read().splitlines() if line
+        ]
+    assert rotated_records[0]["event"] == "request"
+    assert rotated_records[0]["system_prompt"] == "Old request."
+
+
+def test_anthropic_provider_logs_file_request_and_response(tmp_path: Path) -> None:
+    log_path = tmp_path / "ai-interactions.jsonl"
+    fake_client = _FakeAnthropicClient(
+        message_response=_anthropic_message(text="unused", model="claude-test-model"),
+        beta_message_response=_anthropic_beta_message(
+            text="File logged OK",
+            model="claude-test-model",
+        ),
+    )
+    provider = AnthropicAIProvider(
+        api_key="sk-ant-secret-value",
+        model="claude-test-model",
+        max_output_tokens=64,
+        client=fake_client,
+        interaction_logger=AIInteractionLogger(log_path),
+    )
+    uploaded = AIUploadedFile(
+        file_id="file_test123",
+        filename="source.txt",
+        mime_type="text/plain",
+        size_bytes=15,
+        created_at=datetime(2026, 6, 13, 12, 0, tzinfo=UTC),
+    )
+
+    provider.complete_text_with_files(
+        AITextRequest(
+            system_prompt="Use uploaded files only.",
+            user_prompt="Summarize the uploaded file.",
+            max_output_tokens=20,
+        ),
+        files=(uploaded,),
+    )
+
+    records = _jsonl_records(log_path)
+    assert [record["event"] for record in records] == ["request", "response"]
+    assert records[0]["method"] == "complete_text_with_files"
+    assert records[0]["files"] == [
+        {
+            "file_id": "file_test123",
+            "filename": "source.txt",
+            "mime_type": "text/plain",
+            "size_bytes": 15,
+            "created_at": "2026-06-13T12:00:00+00:00",
+        }
+    ]
+    assert records[1]["text"] == "File logged OK"
+
+
+def test_anthropic_provider_logs_text_request_errors(tmp_path: Path) -> None:
+    log_path = tmp_path / "ai-interactions.jsonl"
+    provider = AnthropicAIProvider(
+        api_key="sk-ant-secret-value",
+        model="claude-test-model",
+        max_output_tokens=64,
+        client=_FailingAnthropicClient(RuntimeError("provider failed")),
+        interaction_logger=AIInteractionLogger(log_path),
+    )
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        provider.complete_text(
+            AITextRequest(
+                system_prompt="Use logged responses.",
+                user_prompt="Raise an error.",
+                max_output_tokens=12,
+            )
+        )
+
+    records = _jsonl_records(log_path)
+    assert [record["event"] for record in records] == ["request", "error"]
+    assert records[0]["interaction_id"] == records[1]["interaction_id"]
+    assert records[1]["method"] == "complete_text"
+    assert records[1]["error_type"] == "RuntimeError"
+    assert records[1]["error_message"] == "provider failed"
 
 
 def test_retrying_ai_provider_retries_retryable_status_errors() -> None:
@@ -455,6 +621,23 @@ class _FakeMessagesClient:
         return self.response
 
 
+class _FailingMessagesClient:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def create(
+        self,
+        *,
+        max_tokens: int,
+        messages: Iterable[MessageParam],
+        model: ModelParam,
+        system: str | Iterable[TextBlockParam],
+        cache_control: CacheControlEphemeralParam | None = None,
+        temperature: float | None = None,
+    ) -> Message:
+        raise self.exc
+
+
 class _FakeBetaFilesClient:
     def __init__(
         self,
@@ -545,6 +728,22 @@ class _FakeAnthropicClient:
         )
 
 
+class _FailingAnthropicClient:
+    def __init__(self, exc: Exception) -> None:
+        self.messages = _FailingMessagesClient(exc)
+        self.beta = _FakeBetaClient(
+            file_upload_response=_anthropic_file_metadata(
+                file_id="file_default",
+                filename="default.txt",
+            ),
+            file_delete_response=DeletedFile(id="file_default", type="file_deleted"),
+            beta_message_response=_anthropic_beta_message(
+                text="unused",
+                model="claude-test-model",
+            ),
+        )
+
+
 class _FlakyTextProvider:
     def __init__(
         self,
@@ -577,6 +776,14 @@ def _text_response(text: str) -> AITextResponse:
         input_tokens=1,
         output_tokens=1,
     )
+
+
+def _jsonl_records(path: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _anthropic_message(

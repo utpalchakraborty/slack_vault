@@ -224,24 +224,19 @@ def test_ingest_file_commits_vault_by_default(
     assert _git(vault_path, "ls-files").startswith("20 Sources/sources/source-")
 
 
-def test_ask_returns_no_evidence_without_ai_key(
+def test_ask_requires_ai_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(tmp_path / "vault"))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setattr(
         "slack_vault.cli.ObsidianCliSearch",
         lambda vault_name: _FakeCliObsidianSearch(()),
     )
 
-    exit_code = main(["ask", "What is unknown?"])
-    captured = capsys.readouterr()
-
-    assert exit_code == 0
-    assert "I could not find enough relevant vault context" in captured.out
-    assert "Citations: none" in captured.out
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is required"):
+        main(["ask", "What is unknown?"])
 
 
 def test_ask_answers_from_vault_with_mocked_ai(
@@ -406,12 +401,21 @@ def _fake_qa_provider_from_settings(settings: Settings) -> object:
 
 
 class _FakeAskTextProvider:
-    def complete_text(self, request: AITextRequest) -> AITextResponse:
-        return AITextResponse(
-            text=(
+    def __init__(self) -> None:
+        self.responses = [
+            '{"queries": ["Project Alpha", "local-first ingest"]}',
+            (
                 '{"answer": "Project Alpha needs local-first ingest [1].", '
                 '"citation_ids": [1]}'
             ),
+        ]
+        self.index = 0
+
+    def complete_text(self, request: AITextRequest) -> AITextResponse:
+        response = self.responses[self.index]
+        self.index += 1
+        return AITextResponse(
+            text=response,
             model="fake-model",
             stop_reason="end_turn",
             input_tokens=1,
@@ -422,8 +426,10 @@ class _FakeAskTextProvider:
 class _FakeCliObsidianSearch:
     def __init__(self, paths: tuple[Path, ...]) -> None:
         self.paths = paths
+        self.calls: list[tuple[str, int]] = []
 
     def search(self, query: str, *, limit: int) -> tuple[Path, ...]:
+        self.calls.append((query, limit))
         return self.paths[:limit]
 
 

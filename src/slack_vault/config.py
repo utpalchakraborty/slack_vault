@@ -15,6 +15,7 @@ from dotenv import dotenv_values
 DEFAULT_OBSIDIAN_VAULT_PATH = Path("/Users/utpalrohan/code/slack_obsidian")
 DEFAULT_ARCHIVE_PATH = ".data/archive"
 DEFAULT_LOG_PATH = Path(".data/logs/slack-vault.log")
+DEFAULT_AI_INTERACTION_LOG_PATH = Path(".data/logs/ai-interactions.jsonl")
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOG_BACKUP_COUNT = 14
 DEFAULT_OPERATIONAL_DB_PATH = Path(".data/slack-vault.sqlite3")
@@ -101,6 +102,7 @@ class LoggingSettings:
     """Application logging settings."""
 
     path: Path
+    ai_interaction_path: Path
     level: str
     backup_count: int
 
@@ -248,6 +250,11 @@ class Settings:
                     "SLACK_VAULT_LOG_PATH",
                     DEFAULT_LOG_PATH,
                 ),
+                ai_interaction_path=_path_value(
+                    values,
+                    "SLACK_VAULT_AI_INTERACTION_LOG_PATH",
+                    DEFAULT_AI_INTERACTION_LOG_PATH,
+                ),
                 level=values.get("SLACK_VAULT_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper(),
                 backup_count=_int_value(
                     values,
@@ -333,6 +340,7 @@ class Settings:
             },
             "logging": {
                 "path": str(self.logging.path),
+                "ai_interaction_path": str(self.logging.ai_interaction_path),
                 "level": self.logging.level,
                 "backup_count": self.logging.backup_count,
             },

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Literal, Protocol, cast
+from uuid import uuid4
 
 from anthropic import (
     Anthropic,
@@ -37,6 +40,7 @@ from anthropic.types.beta import (
 )
 
 from slack_vault.config import AIProvider, AIRetrySettings, Settings
+from slack_vault.log_setup import _gzip_namer, _gzip_rotator
 
 ANTHROPIC_FILES_BETA = "files-api-2025-04-14"
 RETRYABLE_AI_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504})
@@ -115,6 +119,143 @@ class AIFileProvider(Protocol):
 
     def delete_file(self, file_id: str) -> bool:
         """Delete an uploaded provider file."""
+
+
+@dataclass(frozen=True)
+class AIInteractionLogger:
+    """Append AI provider request/response records to JSONL."""
+
+    path: Path
+    backup_count: int = 14
+
+    def log_request(
+        self,
+        *,
+        provider: str,
+        method: str,
+        model: str,
+        max_output_tokens: int,
+        request: AITextRequest,
+        prompt_cache: AIPromptCacheConfig | None,
+        files: tuple[AIUploadedFile, ...] = (),
+    ) -> str:
+        """Log an outgoing AI request and return its interaction ID."""
+
+        interaction_id = uuid4().hex
+        self._write(
+            {
+                "event": "request",
+                "interaction_id": interaction_id,
+                "provider": provider,
+                "method": method,
+                "model": model,
+                "max_output_tokens": max_output_tokens,
+                "temperature": request.temperature,
+                "prompt_cache": _prompt_cache_payload(prompt_cache),
+                "system_prompt": request.system_prompt,
+                "user_prompt": request.user_prompt,
+                "files": [_uploaded_file_payload(file) for file in files],
+            }
+        )
+        return interaction_id
+
+    def log_response(
+        self,
+        *,
+        interaction_id: str,
+        provider: str,
+        method: str,
+        response: AITextResponse,
+    ) -> None:
+        """Log a successful AI response."""
+
+        self._write(
+            {
+                "event": "response",
+                "interaction_id": interaction_id,
+                "provider": provider,
+                "method": method,
+                "model": response.model,
+                "stop_reason": response.stop_reason,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "cache_creation_input_tokens": (response.cache_creation_input_tokens),
+                "cache_read_input_tokens": response.cache_read_input_tokens,
+                "text": response.text,
+            }
+        )
+
+    def log_error(
+        self,
+        *,
+        interaction_id: str,
+        provider: str,
+        method: str,
+        exc: Exception,
+    ) -> None:
+        """Log an AI provider error."""
+
+        self._write(
+            {
+                "event": "error",
+                "interaction_id": interaction_id,
+                "provider": provider,
+                "method": method,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+        )
+
+    def _write(self, payload: dict[str, object]) -> None:
+        record = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            **payload,
+        }
+        try:
+            path = self.path.expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = _jsonl_rotating_handler(
+                path,
+                backup_count=self.backup_count,
+            )
+            try:
+                handler.emit(
+                    logging.LogRecord(
+                        name="slack_vault.ai_interactions",
+                        level=logging.INFO,
+                        pathname=__file__,
+                        lineno=0,
+                        msg=json.dumps(
+                            record,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        args=(),
+                        exc_info=None,
+                    )
+                )
+            finally:
+                handler.close()
+        except OSError:
+            logger.exception("Failed to write AI interaction log path=%s", self.path)
+
+
+def _jsonl_rotating_handler(
+    path: Path,
+    *,
+    backup_count: int,
+) -> TimedRotatingFileHandler:
+    handler = TimedRotatingFileHandler(
+        filename=path,
+        when="midnight",
+        interval=1,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.namer = _gzip_namer
+    handler.rotator = _gzip_rotator
+    return handler
 
 
 @dataclass(frozen=True)
@@ -255,6 +396,7 @@ class AnthropicAIProvider:
     max_output_tokens: int
     prompt_cache: AIPromptCacheConfig | None = None
     client: _AnthropicClient | None = field(default=None, repr=False)
+    interaction_logger: AIInteractionLogger | None = field(default=None, repr=False)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AnthropicAIProvider:
@@ -271,6 +413,10 @@ class AnthropicAIProvider:
             api_key=settings.ai.anthropic_api_key,
             model=settings.ai.model,
             max_output_tokens=settings.ai.max_output_tokens,
+            interaction_logger=AIInteractionLogger(
+                settings.logging.ai_interaction_path,
+                backup_count=settings.logging.backup_count,
+            ),
         )
 
     def complete_text(self, request: AITextRequest) -> AITextResponse:
@@ -288,55 +434,70 @@ class AnthropicAIProvider:
             },
         )
         client = self._client()
+        interaction_id = self._log_request(
+            method="complete_text",
+            model=str(model),
+            max_output_tokens=max_tokens,
+            request=request,
+            prompt_cache=prompt_cache,
+        )
 
-        if request.temperature is None:
-            if cache_control is None:
-                message = cast(
-                    Message,
-                    client.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                    ),
-                )
+        try:
+            if request.temperature is None:
+                if cache_control is None:
+                    message = cast(
+                        Message,
+                        client.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                        ),
+                    )
+                else:
+                    message = cast(
+                        Message,
+                        client.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            cache_control=cache_control,
+                        ),
+                    )
             else:
-                message = cast(
-                    Message,
-                    client.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        cache_control=cache_control,
-                    ),
-                )
-        else:
-            if cache_control is None:
-                message = cast(
-                    Message,
-                    client.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        temperature=request.temperature,
-                    ),
-                )
-            else:
-                message = cast(
-                    Message,
-                    client.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        cache_control=cache_control,
-                        temperature=request.temperature,
-                    ),
-                )
+                if cache_control is None:
+                    message = cast(
+                        Message,
+                        client.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            temperature=request.temperature,
+                        ),
+                    )
+                else:
+                    message = cast(
+                        Message,
+                        client.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            cache_control=cache_control,
+                            temperature=request.temperature,
+                        ),
+                    )
+        except Exception as exc:
+            self._log_error(
+                interaction_id,
+                method="complete_text",
+                exc=exc,
+            )
+            raise
 
-        return AITextResponse(
+        response = AITextResponse(
             text=_message_text(message),
             model=str(message.model),
             stop_reason=None
@@ -347,6 +508,12 @@ class AnthropicAIProvider:
             cache_creation_input_tokens=message.usage.cache_creation_input_tokens or 0,
             cache_read_input_tokens=message.usage.cache_read_input_tokens or 0,
         )
+        self._log_response(
+            interaction_id,
+            method="complete_text",
+            response=response,
+        )
+        return response
 
     def upload_file(self, file_path: Path) -> AIUploadedFile:
         """Upload a file to Anthropic's beta Files API."""
@@ -384,59 +551,75 @@ class AnthropicAIProvider:
         content.append({"type": "text", "text": request.user_prompt})
         messages: tuple[BetaMessageParam, ...] = ({"role": "user", "content": content},)
         client = self._client()
+        interaction_id = self._log_request(
+            method="complete_text_with_files",
+            model=str(model),
+            max_output_tokens=max_tokens,
+            request=request,
+            prompt_cache=prompt_cache,
+            files=files,
+        )
 
-        if request.temperature is None:
-            if cache_control is None:
-                message = cast(
-                    BetaMessage,
-                    client.beta.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        betas=[ANTHROPIC_FILES_BETA],
-                    ),
-                )
+        try:
+            if request.temperature is None:
+                if cache_control is None:
+                    message = cast(
+                        BetaMessage,
+                        client.beta.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            betas=[ANTHROPIC_FILES_BETA],
+                        ),
+                    )
+                else:
+                    message = cast(
+                        BetaMessage,
+                        client.beta.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            betas=[ANTHROPIC_FILES_BETA],
+                            cache_control=cache_control,
+                        ),
+                    )
             else:
-                message = cast(
-                    BetaMessage,
-                    client.beta.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        betas=[ANTHROPIC_FILES_BETA],
-                        cache_control=cache_control,
-                    ),
-                )
-        else:
-            if cache_control is None:
-                message = cast(
-                    BetaMessage,
-                    client.beta.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        betas=[ANTHROPIC_FILES_BETA],
-                        temperature=request.temperature,
-                    ),
-                )
-            else:
-                message = cast(
-                    BetaMessage,
-                    client.beta.messages.create(
-                        max_tokens=max_tokens,
-                        messages=messages,
-                        model=model,
-                        system=system,
-                        betas=[ANTHROPIC_FILES_BETA],
-                        cache_control=cache_control,
-                        temperature=request.temperature,
-                    ),
-                )
+                if cache_control is None:
+                    message = cast(
+                        BetaMessage,
+                        client.beta.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            betas=[ANTHROPIC_FILES_BETA],
+                            temperature=request.temperature,
+                        ),
+                    )
+                else:
+                    message = cast(
+                        BetaMessage,
+                        client.beta.messages.create(
+                            max_tokens=max_tokens,
+                            messages=messages,
+                            model=model,
+                            system=system,
+                            betas=[ANTHROPIC_FILES_BETA],
+                            cache_control=cache_control,
+                            temperature=request.temperature,
+                        ),
+                    )
+        except Exception as exc:
+            self._log_error(
+                interaction_id,
+                method="complete_text_with_files",
+                exc=exc,
+            )
+            raise
 
-        return AITextResponse(
+        response = AITextResponse(
             text=_beta_message_text(message),
             model=str(message.model),
             stop_reason=None
@@ -447,6 +630,12 @@ class AnthropicAIProvider:
             cache_creation_input_tokens=message.usage.cache_creation_input_tokens or 0,
             cache_read_input_tokens=message.usage.cache_read_input_tokens or 0,
         )
+        self._log_response(
+            interaction_id,
+            method="complete_text_with_files",
+            response=response,
+        )
+        return response
 
     def delete_file(self, file_id: str) -> bool:
         """Delete a file from Anthropic's beta Files API."""
@@ -467,11 +656,89 @@ class AnthropicAIProvider:
             return request.prompt_cache
         return self.prompt_cache
 
+    def _log_request(
+        self,
+        *,
+        method: str,
+        model: str,
+        max_output_tokens: int,
+        request: AITextRequest,
+        prompt_cache: AIPromptCacheConfig | None,
+        files: tuple[AIUploadedFile, ...] = (),
+    ) -> str | None:
+        if self.interaction_logger is None:
+            return None
+        return self.interaction_logger.log_request(
+            provider="anthropic",
+            method=method,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            request=request,
+            prompt_cache=prompt_cache,
+            files=files,
+        )
+
+    def _log_response(
+        self,
+        interaction_id: str | None,
+        *,
+        method: str,
+        response: AITextResponse,
+    ) -> None:
+        if self.interaction_logger is None or interaction_id is None:
+            return
+        self.interaction_logger.log_response(
+            interaction_id=interaction_id,
+            provider="anthropic",
+            method=method,
+            response=response,
+        )
+
+    def _log_error(
+        self,
+        interaction_id: str | None,
+        *,
+        method: str,
+        exc: Exception,
+    ) -> None:
+        if self.interaction_logger is None or interaction_id is None:
+            return
+        self.interaction_logger.log_error(
+            interaction_id=interaction_id,
+            provider="anthropic",
+            method=method,
+            exc=exc,
+        )
+
 
 def _message_text(message: Message) -> str:
     return "\n".join(
         block.text for block in message.content if isinstance(block, TextBlock)
     ).strip()
+
+
+def _prompt_cache_payload(
+    prompt_cache: AIPromptCacheConfig | None,
+) -> dict[str, object] | None:
+    if prompt_cache is None:
+        return None
+    return {
+        "enabled": prompt_cache.enabled,
+        "ttl": prompt_cache.ttl,
+        "automatic": prompt_cache.automatic,
+        "cache_system_prompt": prompt_cache.cache_system_prompt,
+        "cache_uploaded_files": prompt_cache.cache_uploaded_files,
+    }
+
+
+def _uploaded_file_payload(uploaded_file: AIUploadedFile) -> dict[str, object]:
+    return {
+        "file_id": uploaded_file.file_id,
+        "filename": uploaded_file.filename,
+        "mime_type": uploaded_file.mime_type,
+        "size_bytes": uploaded_file.size_bytes,
+        "created_at": uploaded_file.created_at.isoformat(),
+    }
 
 
 def _beta_message_text(message: BetaMessage) -> str:
