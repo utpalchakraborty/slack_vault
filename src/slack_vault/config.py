@@ -24,6 +24,13 @@ DEFAULT_SLACK_INGEST_ENHANCE = False
 DEFAULT_SLACK_INGEST_SYNTHESIZE = True
 DEFAULT_SLACK_INGEST_GIT_COMMIT = True
 DEFAULT_SLACK_INGEST_GIT_PUSH = True
+DEFAULT_CONNECT_IMPORTED_DOCUMENTS = False
+DEFAULT_SLACK_INGEST_CONNECT = False
+DEFAULT_CONNECTION_MAX_TURNS = 20
+DEFAULT_CONNECTION_MAX_TOUCHED_PATHS = 12
+DEFAULT_CONNECTION_MAX_CHANGED_LINES = 400
+DEFAULT_OBSIDIAN_SKILLS_PATH = Path("90 System/agent-skills/upstream/obsidian-skills")
+DEFAULT_CUSTOM_SKILLS_PATH = Path("90 System/agent-skills/slack-vault")
 DEFAULT_AI_RETRY_MAX_ATTEMPTS = 3
 DEFAULT_AI_RETRY_INITIAL_DELAY_SECONDS = 60.0
 DEFAULT_AI_RETRY_MAX_DELAY_SECONDS = 300.0
@@ -126,6 +133,19 @@ class IngestionSettings:
 
 
 @dataclass(frozen=True)
+class ConnectionSettings:
+    """Vault connection-agent settings."""
+
+    connect_imported_documents: bool
+    slack_ingest_connect: bool
+    max_turns: int
+    max_touched_paths: int
+    max_changed_lines: int
+    obsidian_skills_path: Path
+    custom_skills_path: Path
+
+
+@dataclass(frozen=True)
 class Settings:
     """Resolved application settings."""
 
@@ -139,6 +159,7 @@ class Settings:
     logging: LoggingSettings
     operational: OperationalSettings
     ingestion: IngestionSettings
+    connection: ConnectionSettings
 
     @classmethod
     def from_env(
@@ -296,6 +317,61 @@ class Settings:
                     DEFAULT_SLACK_INGEST_GIT_PUSH,
                 ),
             ),
+            connection=ConnectionSettings(
+                connect_imported_documents=_bool_value(
+                    values,
+                    "SLACK_VAULT_CONNECT_IMPORTED_DOCUMENTS",
+                    DEFAULT_CONNECT_IMPORTED_DOCUMENTS,
+                ),
+                slack_ingest_connect=_bool_value(
+                    values,
+                    "SLACK_VAULT_SLACK_INGEST_CONNECT",
+                    DEFAULT_SLACK_INGEST_CONNECT,
+                ),
+                max_turns=_positive_int_value(
+                    values,
+                    "SLACK_VAULT_CONNECTION_MAX_TURNS",
+                    DEFAULT_CONNECTION_MAX_TURNS,
+                ),
+                max_touched_paths=_positive_int_value(
+                    values,
+                    "SLACK_VAULT_CONNECTION_MAX_TOUCHED_PATHS",
+                    DEFAULT_CONNECTION_MAX_TOUCHED_PATHS,
+                ),
+                max_changed_lines=_positive_int_value(
+                    values,
+                    "SLACK_VAULT_CONNECTION_MAX_CHANGED_LINES",
+                    DEFAULT_CONNECTION_MAX_CHANGED_LINES,
+                ),
+                obsidian_skills_path=_path_value(
+                    values,
+                    "SLACK_VAULT_OBSIDIAN_SKILLS_PATH",
+                    DEFAULT_OBSIDIAN_SKILLS_PATH,
+                ),
+                custom_skills_path=_path_value(
+                    values,
+                    "SLACK_VAULT_CUSTOM_SKILLS_PATH",
+                    DEFAULT_CUSTOM_SKILLS_PATH,
+                ),
+            ),
+        )
+
+    @property
+    def resolved_obsidian_skills_path(self) -> Path:
+        """Return the upstream Obsidian skills path resolved against the vault."""
+
+        return _resolve_vault_path(
+            self.obsidian_vault_path,
+            self.connection.obsidian_skills_path,
+        )
+
+    @property
+    def resolved_custom_skills_path(self) -> Path:
+        """Return the custom Slack Vault skills path resolved against the vault."""
+
+        return _resolve_vault_path(
+            self.obsidian_vault_path,
+            self.connection.custom_skills_path,
         )
 
     def as_json(self) -> str:
@@ -356,6 +432,21 @@ class Settings:
                 "slack_ingest_git_commit": self.ingestion.slack_ingest_git_commit,
                 "slack_ingest_git_push": self.ingestion.slack_ingest_git_push,
             },
+            "connection": {
+                "connect_imported_documents": (
+                    self.connection.connect_imported_documents
+                ),
+                "slack_ingest_connect": self.connection.slack_ingest_connect,
+                "max_turns": self.connection.max_turns,
+                "max_touched_paths": self.connection.max_touched_paths,
+                "max_changed_lines": self.connection.max_changed_lines,
+                "obsidian_skills_path": str(self.connection.obsidian_skills_path),
+                "custom_skills_path": str(self.connection.custom_skills_path),
+                "resolved_obsidian_skills_path": str(
+                    self.resolved_obsidian_skills_path
+                ),
+                "resolved_custom_skills_path": str(self.resolved_custom_skills_path),
+            },
         }
         return json.dumps(data, indent=2, sort_keys=True)
 
@@ -393,6 +484,12 @@ def _path_value(values: Mapping[str, str], key: str, default: Path) -> Path:
     if raw_value is None or not raw_value.strip():
         return default
     return Path(raw_value).expanduser()
+
+
+def _resolve_vault_path(vault_path: Path, path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return vault_path / path
 
 
 def _string_value(values: Mapping[str, str], key: str, default: str) -> str:

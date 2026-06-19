@@ -9,6 +9,11 @@ from pathlib import Path
 
 from slack_vault.ai import AITextProvider, AnthropicAIProvider, RetryingAITextProvider
 from slack_vault.config import Settings
+from slack_vault.connections import (
+    VaultDiffValidationConfig,
+    inspect_vault_diff,
+    validate_connection_diff,
+)
 from slack_vault.dev_cleanup import clean_poc_data
 from slack_vault.enhancement import AnthropicEvidenceEnhancer, EvidenceEnhancer
 from slack_vault.git_vault import GitVaultCommitter
@@ -97,6 +102,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Maximum number of retrieved knowledge notes to use.",
+    )
+
+    validate_diff_parser = subparsers.add_parser(
+        "validate-vault-diff",
+        help="Validate current vault Markdown changes before committing them.",
+    )
+    validate_diff_parser.add_argument(
+        "--source-id",
+        required=True,
+        help="Source ID that must remain present in the source record and note.",
+    )
+    validate_diff_parser.add_argument(
+        "--primary-note",
+        help="Vault-relative path to the primary knowledge note.",
     )
 
     subparsers.add_parser(
@@ -258,6 +277,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(render_answer_result(result))
         return 0
+
+    if args.command == "validate-vault-diff":
+        inspection = inspect_vault_diff(settings.obsidian_vault_path)
+        validation = validate_connection_diff(
+            settings.obsidian_vault_path,
+            inspection,
+            VaultDiffValidationConfig(
+                source_id=args.source_id,
+                primary_note_path=None
+                if args.primary_note is None
+                else Path(args.primary_note),
+                max_touched_paths=settings.connection.max_touched_paths,
+                max_changed_lines=settings.connection.max_changed_lines,
+            ),
+        )
+        print(f"Vault: {settings.obsidian_vault_path}")
+        print(f"Touched paths: {len(inspection.touched_paths)}")
+        for path in inspection.touched_paths:
+            print(f"- {path.as_posix()}")
+        print(f"Changed lines: {inspection.changed_line_count}")
+        if validation.ok:
+            print("Vault diff validation: ok")
+            print(f"Stageable paths: {len(validation.stageable_paths)}")
+            for path in validation.stageable_paths:
+                print(f"- {path.as_posix()}")
+            return 0
+        print("Vault diff validation: failed")
+        for error in validation.errors:
+            print(f"- {error}")
+        return 1
 
     if args.command == "run-slack":
         print(f"Log file: {log_path}")

@@ -1,4 +1,4 @@
-.PHONY: ask check-slack-setup ingest-file init-vault init-vault-overwrite run run-slack show-config slack-qa-worker slack-worker
+.PHONY: ask check-slack-setup ingest-file init-vault init-vault-overwrite run run-slack show-config slack-qa-worker slack-worker validate-vault-diff
 
 run: show-config
 
@@ -22,6 +22,12 @@ ifndef QUESTION
 	$(error QUESTION is required. Usage: make ask QUESTION="question")
 endif
 	$(UV_RUN) slack-vault ask "$(QUESTION)" $(if $(LIMIT),--limit "$(LIMIT)")
+
+validate-vault-diff:
+ifndef SOURCE_ID
+	$(error SOURCE_ID is required. Usage: make validate-vault-diff SOURCE_ID=source-...)
+endif
+	$(UV_RUN) slack-vault validate-vault-diff --source-id "$(SOURCE_ID)" $(if $(PRIMARY_NOTE),--primary-note "$(PRIMARY_NOTE)")
 
 run-slack:
 	$(UV_RUN) slack-vault run-slack

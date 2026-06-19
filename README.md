@@ -135,6 +135,23 @@ Sequential automatic ingest flows use
 The default is 75 seconds so later Slack batch ingestion does not immediately
 hit token-per-minute limits after processing a large document.
 
+Vault connection work is being added behind explicit settings. Custom
+Slack Vault agent skills live in the Obsidian vault under
+`90 System/agent-skills/slack-vault`, and upstream Obsidian skills are expected
+under `90 System/agent-skills/upstream/obsidian-skills`. The paths default to
+being resolved relative to `SLACK_VAULT_OBSIDIAN_PATH` and can be changed with
+`SLACK_VAULT_CUSTOM_SKILLS_PATH` and `SLACK_VAULT_OBSIDIAN_SKILLS_PATH`.
+
+Before an agent-produced connection diff is committed, it can be inspected with:
+
+```sh
+make validate-vault-diff SOURCE_ID=source-YYYY-MM-DD-abcdef123456 PRIMARY_NOTE="10 Knowledge/example.md"
+```
+
+The validator allows only bounded Markdown changes in expected vault folders,
+rejects protected paths such as `.obsidian/` and `90 System/agent-skills/`, and
+checks that the source record and primary note still reference the source ID.
+
 To run the Phase 6 Slack ingestion POC locally, configure the Slack values in
 `.env`, then verify credentials, channel access, app manifest settings, and
 Socket Mode readiness:

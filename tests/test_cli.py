@@ -225,6 +225,69 @@ def test_ingest_file_commits_vault_by_default(
     assert _git(vault_path, "ls-files").startswith("20 Sources/sources/source-")
 
 
+def test_validate_vault_diff_reports_safe_markdown_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault_path = tmp_path / "vault"
+    _init_git_repo(vault_path)
+    (vault_path / "10 Knowledge").mkdir(parents=True)
+    (vault_path / "20 Sources/sources").mkdir(parents=True)
+    (vault_path / "30 Maps").mkdir(parents=True)
+    note = vault_path / "10 Knowledge/imported-note.md"
+    note.write_text(
+        "\n".join(
+            [
+                "# Imported Note",
+                "",
+                "Initial body.",
+                "",
+                "## Sources",
+                "",
+                "- source-test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (vault_path / "20 Sources/sources/source-test.md").write_text(
+        "---\nsource_id: source-test\n---\n",
+        encoding="utf-8",
+    )
+    _run_git(vault_path, "add", ".")
+    _run_git(vault_path, "commit", "-m", "Initialize vault")
+    note.write_text(
+        "\n".join(
+            [
+                "# Imported Note",
+                "",
+                "Connected body.",
+                "",
+                "## Sources",
+                "",
+                "- source-test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(vault_path))
+
+    exit_code = main(
+        [
+            "validate-vault-diff",
+            "--source-id",
+            "source-test",
+            "--primary-note",
+            "10 Knowledge/imported-note.md",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Vault diff validation: ok" in captured.out
+    assert "- 10 Knowledge/imported-note.md" in captured.out
+
+
 def test_ask_requires_ai_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

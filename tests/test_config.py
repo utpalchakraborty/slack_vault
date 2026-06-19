@@ -15,10 +15,17 @@ from slack_vault.config import (
     DEFAULT_AI_RETRY_MAX_ATTEMPTS,
     DEFAULT_AI_RETRY_MAX_DELAY_SECONDS,
     DEFAULT_AUTOMATIC_INGEST_DELAY_SECONDS,
+    DEFAULT_CONNECT_IMPORTED_DOCUMENTS,
+    DEFAULT_CONNECTION_MAX_CHANGED_LINES,
+    DEFAULT_CONNECTION_MAX_TOUCHED_PATHS,
+    DEFAULT_CONNECTION_MAX_TURNS,
+    DEFAULT_CUSTOM_SKILLS_PATH,
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_LEVEL,
     DEFAULT_LOG_PATH,
+    DEFAULT_OBSIDIAN_SKILLS_PATH,
     DEFAULT_OPERATIONAL_DB_PATH,
+    DEFAULT_SLACK_INGEST_CONNECT,
     DEFAULT_SLACK_INGEST_ENHANCE,
     DEFAULT_SLACK_INGEST_GIT_COMMIT,
     DEFAULT_SLACK_INGEST_GIT_PUSH,
@@ -66,6 +73,13 @@ CONFIG_ENV_KEYS = (
     "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE",
     "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT",
     "SLACK_VAULT_SLACK_INGEST_GIT_PUSH",
+    "SLACK_VAULT_CONNECT_IMPORTED_DOCUMENTS",
+    "SLACK_VAULT_SLACK_INGEST_CONNECT",
+    "SLACK_VAULT_CONNECTION_MAX_TURNS",
+    "SLACK_VAULT_CONNECTION_MAX_TOUCHED_PATHS",
+    "SLACK_VAULT_CONNECTION_MAX_CHANGED_LINES",
+    "SLACK_VAULT_OBSIDIAN_SKILLS_PATH",
+    "SLACK_VAULT_CUSTOM_SKILLS_PATH",
 )
 
 
@@ -113,6 +127,24 @@ def test_settings_default_to_local_slack_obsidian_and_anthropic() -> None:
     assert settings.ingestion.slack_ingest_synthesize == DEFAULT_SLACK_INGEST_SYNTHESIZE
     assert settings.ingestion.slack_ingest_git_commit == DEFAULT_SLACK_INGEST_GIT_COMMIT
     assert settings.ingestion.slack_ingest_git_push == DEFAULT_SLACK_INGEST_GIT_PUSH
+    assert (
+        settings.connection.connect_imported_documents
+        == DEFAULT_CONNECT_IMPORTED_DOCUMENTS
+    )
+    assert settings.connection.slack_ingest_connect == DEFAULT_SLACK_INGEST_CONNECT
+    assert settings.connection.max_turns == DEFAULT_CONNECTION_MAX_TURNS
+    assert settings.connection.max_touched_paths == DEFAULT_CONNECTION_MAX_TOUCHED_PATHS
+    assert settings.connection.max_changed_lines == DEFAULT_CONNECTION_MAX_CHANGED_LINES
+    assert settings.connection.obsidian_skills_path == DEFAULT_OBSIDIAN_SKILLS_PATH
+    assert settings.connection.custom_skills_path == DEFAULT_CUSTOM_SKILLS_PATH
+    assert (
+        settings.resolved_obsidian_skills_path
+        == settings.obsidian_vault_path / DEFAULT_OBSIDIAN_SKILLS_PATH
+    )
+    assert (
+        settings.resolved_custom_skills_path
+        == settings.obsidian_vault_path / DEFAULT_CUSTOM_SKILLS_PATH
+    )
 
 
 def test_settings_read_environment_values() -> None:
@@ -154,6 +186,13 @@ def test_settings_read_environment_values() -> None:
             "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE": "off",
             "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT": "false",
             "SLACK_VAULT_SLACK_INGEST_GIT_PUSH": "0",
+            "SLACK_VAULT_CONNECT_IMPORTED_DOCUMENTS": "true",
+            "SLACK_VAULT_SLACK_INGEST_CONNECT": "yes",
+            "SLACK_VAULT_CONNECTION_MAX_TURNS": "9",
+            "SLACK_VAULT_CONNECTION_MAX_TOUCHED_PATHS": "5",
+            "SLACK_VAULT_CONNECTION_MAX_CHANGED_LINES": "250",
+            "SLACK_VAULT_OBSIDIAN_SKILLS_PATH": "custom/upstream-skills",
+            "SLACK_VAULT_CUSTOM_SKILLS_PATH": "/tmp/custom-slack-vault-skills",
         }
     )
 
@@ -197,6 +236,22 @@ def test_settings_read_environment_values() -> None:
     assert settings.ingestion.slack_ingest_synthesize is False
     assert settings.ingestion.slack_ingest_git_commit is False
     assert settings.ingestion.slack_ingest_git_push is False
+    assert settings.connection.connect_imported_documents is True
+    assert settings.connection.slack_ingest_connect is True
+    assert settings.connection.max_turns == 9
+    assert settings.connection.max_touched_paths == 5
+    assert settings.connection.max_changed_lines == 250
+    assert settings.connection.obsidian_skills_path == Path("custom/upstream-skills")
+    assert settings.connection.custom_skills_path == Path(
+        "/tmp/custom-slack-vault-skills"
+    )
+    assert (
+        settings.resolved_obsidian_skills_path
+        == Path("~/vault").expanduser() / "custom/upstream-skills"
+    )
+    assert settings.resolved_custom_skills_path == Path(
+        "/tmp/custom-slack-vault-skills"
+    )
 
 
 def test_settings_load_dotenv_from_current_working_directory(
@@ -287,3 +342,23 @@ def test_settings_json_redacts_secrets() -> None:
     assert payload["ingestion"]["slack_ingest_synthesize"] is True
     assert payload["ingestion"]["slack_ingest_git_commit"] is True
     assert payload["ingestion"]["slack_ingest_git_push"] is True
+    assert payload["connection"]["connect_imported_documents"] is False
+    assert payload["connection"]["slack_ingest_connect"] is False
+    assert payload["connection"]["max_turns"] == 20
+    assert payload["connection"]["max_touched_paths"] == 12
+    assert payload["connection"]["max_changed_lines"] == 400
+    assert (
+        payload["connection"]["obsidian_skills_path"]
+        == "90 System/agent-skills/upstream/obsidian-skills"
+    )
+    assert (
+        payload["connection"]["custom_skills_path"]
+        == "90 System/agent-skills/slack-vault"
+    )
+    assert payload["connection"]["resolved_obsidian_skills_path"] == (
+        "/Users/utpalrohan/code/slack_obsidian/"
+        "90 System/agent-skills/upstream/obsidian-skills"
+    )
+    assert payload["connection"]["resolved_custom_skills_path"] == (
+        "/Users/utpalrohan/code/slack_obsidian/90 System/agent-skills/slack-vault"
+    )
