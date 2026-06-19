@@ -6,6 +6,48 @@ existing Obsidian vault graph. The feature should make imported documents useful
 as part of a linked knowledgebase rather than leaving each import as an isolated
 note.
 
+## Current Status
+
+Updated: 2026-06-19.
+
+The first implementation pass has landed and has been pushed to both repos.
+
+Slack Vault app repo:
+
+- `01751e8` added vault connection diff inspection and validation.
+- `6719eb6` threaded optional vault connection through local ingest and Git
+  commit staging.
+- `af5a4dd` added the Claude Agent SDK-backed vault connector and Slack ingest
+  wiring.
+- `8ccfd71` added the `connect-note` backfill command and dedicated connection
+  commit messages.
+
+Obsidian vault repo:
+
+- `950f68d` added the upstream Obsidian skills submodule and initial
+  Slack Vault custom skills under `90 System/agent-skills/`.
+
+Current working state:
+
+- local ingest supports `SYNTHESIZE=1 CONNECT=1`;
+- Slack ingest can create the connector when
+  `SLACK_VAULT_SLACK_INGEST_CONNECT=true`;
+- existing notes can be connected with `slack-vault connect-note` or
+  `make connect-note`;
+- connection diffs are inspected and validated before Git commit;
+- normal agent runs are blocked from touching `.obsidian/`, `.git/`, skill
+  files, non-Markdown files, unsafe paths, deletes, renames, and overly large
+  diffs;
+- `make check` passed with 207 tests, 2 skipped, and 90.15 percent coverage.
+
+Not done yet:
+
+- live Claude Agent smoke test against a disposable or approved vault note;
+- Slack live smoke test with connection enabled;
+- full raw agent-message artifact logging outside Git;
+- batch backfill command for many existing notes;
+- prompt/skill tuning based on real vault diffs.
+
 ## 1. Goal
 
 When a source document is ingested, the system should:
@@ -516,6 +558,8 @@ make connect-note NOTE="10 Knowledge/example.md"
 
 ### Step A: Document And Dependency Planning
 
+Status: complete.
+
 Deliverables:
 
 - this plan;
@@ -529,6 +573,8 @@ Acceptance criteria:
 
 ### Step B: Add Skill Sources
 
+Status: mostly complete.
+
 Deliverables:
 
 - upstream Obsidian skills available locally under the Obsidian vault repo;
@@ -539,27 +585,33 @@ Deliverables:
 
 Acceptance criteria:
 
-- SDK can discover both upstream and custom skills in a live smoke check;
+- SDK discovery still needs a live smoke check;
 - custom skills are concise and point to repo/vault-specific rules;
 - upstream skills are not edited in place;
 - normal connection validation rejects accidental changes to skill files.
 
 ### Step C: Build Agent Runner
 
+Status: partially complete.
+
 Deliverables:
 
-- `ClaudeAgentVaultConnectionRunner`;
-- fake runner for tests;
-- logging of agent messages outside Git;
+- `ClaudeAgentVaultConnector` wraps the Claude Agent SDK;
+- fake SDK query functions cover tests;
+- result summary and errors are captured, but full raw agent-message artifact
+  logging outside Git is still pending;
 - bounded turn/tool settings.
 
 Acceptance criteria:
 
 - unit tests cover prompt construction and plugin path selection;
-- missing SDK or missing skill path fails clearly;
+- missing SDK is handled by the locked dependency, but missing skill-path
+  preflight should still be made clearer;
 - live smoke test can ask the agent to list available skills.
 
 ### Step D: Build Diff Inspection And Validation
+
+Status: complete for the first cut.
 
 Deliverables:
 
@@ -572,11 +624,14 @@ Deliverables:
 
 Acceptance criteria:
 
-- tests cover allowed edits, forbidden paths, deletes, binary files, `.obsidian`
-  changes, source ID removal, and unresolved wikilinks;
+- tests cover allowed edits, forbidden paths, deletes, renames, non-Markdown
+  paths, `.obsidian` changes, source ID removal, unresolved wikilinks, and
+  diff-size limits;
 - validation failure leaves changes uncommitted.
 
 ### Step E: Integrate Local Ingest
+
+Status: complete for the first cut.
 
 Deliverables:
 
@@ -588,11 +643,13 @@ Deliverables:
 Acceptance criteria:
 
 - deterministic ingest remains unchanged by default;
-- local `SYNTHESIZE=1 CONNECT=1` produces one vault commit with all accepted
-  Markdown changes;
+- local `SYNTHESIZE=1 CONNECT=1` is implemented and expected to produce one
+  vault commit with all accepted Markdown changes;
 - connection skipped status is clear when no primary knowledge note exists.
 
 ### Step F: Integrate Slack Ingestion
+
+Status: complete for the first cut.
 
 Deliverables:
 
@@ -603,10 +660,12 @@ Deliverables:
 Acceptance criteria:
 
 - Slack ingest remains unchanged while `SLACK_VAULT_SLACK_INGEST_CONNECT=false`;
-- enabling connection preserves idempotency and clean-worktree behavior;
+- enabling connection is wired through the same clean-worktree and commit path;
 - validation failures are visible in the Slack thread and operational logs.
 
 ### Step G: Add Backfill Command
+
+Status: partially complete.
 
 Deliverables:
 
@@ -621,6 +680,8 @@ Acceptance criteria:
 - each batch starts from a clean vault worktree.
 
 ### Step H: Rollout And Tuning
+
+Status: pending.
 
 Deliverables:
 
@@ -697,17 +758,27 @@ Push failure:
 - report push failure;
 - operator can retry push.
 
-## 11. Open Decisions
+## 11. Decisions And Remaining Questions
 
-1. Should upstream `kepano/obsidian-skills` be a Git submodule or vendored
-   snapshot?
-2. Should local CLI `--connect` require `--synthesize`, or should it also
-   support source-record-only connection later?
-3. What should be the first default touched-path limit: 8, 12, or 20 files?
-4. Should bridge-note creation be fully disabled in v1, or enabled behind a
-   separate `CONNECT_BRIDGE_NOTES=1` flag?
-5. Should link validation use only Obsidian CLI, only local Markdown parsing, or
-   both?
+Resolved:
+
+1. Upstream `kepano/obsidian-skills` is tracked as a Git submodule in the
+   Obsidian vault repo.
+2. Local CLI `--connect` requires `--synthesize` for ingest-time connection.
+   Existing synthesized notes are handled by `connect-note`.
+3. The first default touched-path limit is 12 files.
+4. Bridge-note creation is disabled for v1 and should wait until simple linking
+   is reliable.
+5. Link validation currently uses local Markdown parsing. Obsidian CLI link
+   checks can be added later if local parsing proves insufficient.
+
+Remaining questions:
+
+1. What exact raw agent-message artifact format should we store outside Git?
+2. Should batch backfill be a simple `connect-existing --all`, or should it
+   require explicit note lists and max-count limits from the start?
+3. After live smoke testing, should Slack connection be enabled by default or
+   remain explicitly opt-in?
 
 ## 12. References
 
