@@ -376,6 +376,7 @@ class _FakeIngestPath:
                 schema="slack_vault.evidence.v1",
             ),
             synthesis_result=None,
+            connection_result=None,
             source_record=SourceRecordWriteResult(
                 source_id=source_id,
                 path=source_record_path,
@@ -403,11 +404,12 @@ class _FakeCommitter:
         source_filename: str,
         source_record_path: Path,
         knowledge_note_paths: tuple[Path, ...] = (),
+        connection_note_paths: tuple[Path, ...] = (),
     ) -> VaultGitCommitResult:
         return VaultGitCommitResult(
             committed=True,
             commit_hash="abc123",
             subject=f"Ingest {source_id}",
             body="",
-            paths=(source_record_path,),
+            paths=(source_record_path, *knowledge_note_paths, *connection_note_paths),
         )

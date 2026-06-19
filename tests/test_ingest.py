@@ -8,6 +8,7 @@ import pytest
 
 from slack_vault.archive import ArchivedSourceRef, SourceIngestMetadata
 from slack_vault.config import Settings
+from slack_vault.connections import ConnectionStatus, VaultConnectionResult
 from slack_vault.enhancement import (
     EnhancedEvidenceBlock,
     EnhancementResult,
@@ -178,6 +179,69 @@ def test_ingest_local_file_can_commit_generated_vault_paths(tmp_path: Path) -> N
     assert committer.source_ids == (result.source_record.source_id,)
     assert committer.source_record_paths == (result.source_record.path,)
     assert committer.knowledge_note_paths == ((),)
+    assert committer.connection_note_paths == ((),)
+
+
+def test_ingest_local_file_can_run_vault_connector_before_commit(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.md"
+    source.write_text("# Overview\n\nSource evidence.", encoding="utf-8")
+    vault_path = tmp_path / "vault"
+    settings = Settings.from_env(
+        {
+            "SLACK_VAULT_ARCHIVE_PATH": str(tmp_path / "archive"),
+            "SLACK_VAULT_OBSIDIAN_PATH": str(vault_path),
+        }
+    )
+    synthesizer = _FakeSynthesizer(vault_path)
+    connector = _FakeConnector()
+    committer = _FakeCommitter()
+
+    result = ingest_local_file(
+        source,
+        settings,
+        knowledge_synthesizer=synthesizer,
+        vault_connector=connector,
+        vault_committer=committer,
+    )
+
+    assert result.connection_result is not None
+    assert result.connection_result.status is ConnectionStatus.COMPLETED
+    assert connector.calls == 1
+    assert connector.source_record_exists is True
+    assert result.synthesis_result is not None
+    assert result.synthesis_result.note is not None
+    note_path = result.synthesis_result.note.path
+    assert connector.primary_note_paths == (note_path,)
+    assert committer.calls == 1
+    assert committer.knowledge_note_paths == ((note_path,),)
+    assert committer.connection_note_paths == (
+        (vault_path / "30 Maps/topic-index.md",),
+    )
+
+
+def test_ingest_local_file_skips_connector_without_synthesized_note(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.md"
+    source.write_text("# Overview\n\nSource evidence.", encoding="utf-8")
+    settings = Settings.from_env(
+        {
+            "SLACK_VAULT_ARCHIVE_PATH": str(tmp_path / "archive"),
+            "SLACK_VAULT_OBSIDIAN_PATH": str(tmp_path / "vault"),
+        }
+    )
+    connector = _FakeConnector()
+
+    result = ingest_local_file(source, settings, vault_connector=connector)
+
+    assert result.connection_result is not None
+    assert result.connection_result.status is ConnectionStatus.SKIPPED
+    assert result.connection_result.validation_errors == (
+        "Connection requires a synthesized primary knowledge note.",
+    )
+    assert connector.calls == 0
 
 
 def test_ingest_local_file_stops_before_commit_when_synthesis_fails(
@@ -420,12 +484,42 @@ class _FailingSynthesizer:
         )
 
 
+class _FakeConnector:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.source_record_exists = False
+        self.primary_note_paths: tuple[Path | None, ...] = ()
+
+    def connect(
+        self,
+        vault_path: Path,
+        *,
+        source_id: str,
+        source_record_path: Path,
+        primary_note_path: Path | None,
+    ) -> VaultConnectionResult:
+        self.calls += 1
+        self.source_record_exists = source_record_path.exists()
+        self.primary_note_paths = (*self.primary_note_paths, primary_note_path)
+        touched_path = vault_path / "30 Maps/topic-index.md"
+        touched_path.parent.mkdir(parents=True, exist_ok=True)
+        touched_path.write_text("- [[fake|Fake]]\n", encoding="utf-8")
+        return VaultConnectionResult(
+            status=ConnectionStatus.COMPLETED,
+            source_id=source_id,
+            primary_note_path=primary_note_path,
+            touched_paths=(touched_path,),
+            agent_summary="Connected fake note.",
+        )
+
+
 class _FakeCommitter:
     def __init__(self) -> None:
         self.calls = 0
         self.source_ids: tuple[str, ...] = ()
         self.source_record_paths: tuple[Path, ...] = ()
         self.knowledge_note_paths: tuple[tuple[Path, ...], ...] = ()
+        self.connection_note_paths: tuple[tuple[Path, ...], ...] = ()
 
     def ensure_clean_worktree(self, vault_path: Path) -> None:
         return None
@@ -438,15 +532,20 @@ class _FakeCommitter:
         source_filename: str,
         source_record_path: Path,
         knowledge_note_paths: tuple[Path, ...] = (),
+        connection_note_paths: tuple[Path, ...] = (),
     ) -> VaultGitCommitResult:
         self.calls += 1
         self.source_ids = (*self.source_ids, source_id)
         self.source_record_paths = (*self.source_record_paths, source_record_path)
         self.knowledge_note_paths = (*self.knowledge_note_paths, knowledge_note_paths)
+        self.connection_note_paths = (
+            *self.connection_note_paths,
+            connection_note_paths,
+        )
         return VaultGitCommitResult(
             committed=True,
             commit_hash="abc123",
             subject=f"Ingest {source_id}",
             body=f"Source filename: {source_filename}",
-            paths=(source_record_path,),
+            paths=(source_record_path, *knowledge_note_paths, *connection_note_paths),
         )

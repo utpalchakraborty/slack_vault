@@ -18,6 +18,7 @@ def test_build_ingest_commit_message_includes_source_and_notes() -> None:
         source_filename="Example.docx",
         source_record_path=Path("20 Sources/sources/source.md"),
         knowledge_note_paths=(Path("10 Knowledge/example.md"),),
+        connection_note_paths=(Path("30 Maps/topic-index.md"),),
     )
 
     assert subject == "Ingest source-2026-06-13-abcdef123456"
@@ -25,6 +26,8 @@ def test_build_ingest_commit_message_includes_source_and_notes() -> None:
     assert "Source filename: Example.docx" in body
     assert "Source record: 20 Sources/sources/source.md" in body
     assert "- 10 Knowledge/example.md" in body
+    assert "Connected vault paths:" in body
+    assert "- 30 Maps/topic-index.md" in body
 
 
 def test_git_vault_committer_creates_commit_for_generated_paths(
@@ -34,10 +37,13 @@ def test_git_vault_committer_creates_commit_for_generated_paths(
     _init_git_repo(vault_path)
     source_record = vault_path / "20 Sources/sources/source-test.md"
     knowledge_note = vault_path / "10 Knowledge/example.md"
+    connection_note = vault_path / "30 Maps/topic-index.md"
     source_record.parent.mkdir(parents=True)
     knowledge_note.parent.mkdir(parents=True)
+    connection_note.parent.mkdir(parents=True)
     source_record.write_text("# Source\n", encoding="utf-8")
     knowledge_note.write_text("# Knowledge\n", encoding="utf-8")
+    connection_note.write_text("# Topic Index\n", encoding="utf-8")
 
     result = GitVaultCommitter().commit_ingest(
         vault_path,
@@ -45,6 +51,7 @@ def test_git_vault_committer_creates_commit_for_generated_paths(
         source_filename="Example.docx",
         source_record_path=source_record,
         knowledge_note_paths=(knowledge_note,),
+        connection_note_paths=(connection_note,),
     )
 
     assert result.committed is True
@@ -54,16 +61,19 @@ def test_git_vault_committer_creates_commit_for_generated_paths(
     assert result.paths == (
         Path("20 Sources/sources/source-test.md"),
         Path("10 Knowledge/example.md"),
+        Path("30 Maps/topic-index.md"),
     )
     assert _git(vault_path, "status", "--short") == ""
     assert _git(vault_path, "log", "-1", "--pretty=%s") == "Ingest source-test"
     commit_body = _git(vault_path, "log", "-1", "--pretty=%b")
     assert "Source filename: Example.docx" in commit_body
     assert "- 10 Knowledge/example.md" in commit_body
+    assert "- 30 Maps/topic-index.md" in commit_body
     tracked_files = _git(vault_path, "ls-files").splitlines()
     assert tracked_files == [
         "10 Knowledge/example.md",
         "20 Sources/sources/source-test.md",
+        "30 Maps/topic-index.md",
     ]
 
 

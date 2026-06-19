@@ -15,6 +15,11 @@ from slack_vault.archive import (
     SourceIngestMetadata,
 )
 from slack_vault.config import ArchiveProviderKind, Settings
+from slack_vault.connections import (
+    ConnectionStatus,
+    VaultConnectionResult,
+    VaultConnector,
+)
 from slack_vault.enhancement import (
     EnhancementResult,
     EnhancementStatus,
@@ -50,6 +55,7 @@ class LocalFileIngestResult:
     enhancement_result: EnhancementResult | None
     evidence_artifact: EvidenceArtifactWriteResult
     synthesis_result: KnowledgeSynthesisResult | None
+    connection_result: VaultConnectionResult | None
     source_record: SourceRecordWriteResult
     git_commit: VaultGitCommitResult | None
 
@@ -72,6 +78,7 @@ def ingest_local_files(
     overwrite_source_record: bool = False,
     evidence_enhancer: EvidenceEnhancer | None = None,
     knowledge_synthesizer: KnowledgeSynthesizer | None = None,
+    vault_connector: VaultConnector | None = None,
     vault_committer: VaultCommitter | None = None,
     delay_between_files_seconds: float | None = None,
     sleep: SleepFunction = time.sleep,
@@ -104,6 +111,7 @@ def ingest_local_files(
                 overwrite_source_record=overwrite_source_record,
                 evidence_enhancer=evidence_enhancer,
                 knowledge_synthesizer=knowledge_synthesizer,
+                vault_connector=vault_connector,
                 vault_committer=vault_committer,
                 now=now,
             )
@@ -119,6 +127,7 @@ def ingest_local_file(
     overwrite_source_record: bool = False,
     evidence_enhancer: EvidenceEnhancer | None = None,
     knowledge_synthesizer: KnowledgeSynthesizer | None = None,
+    vault_connector: VaultConnector | None = None,
     vault_committer: VaultCommitter | None = None,
     now: datetime | None = None,
 ) -> LocalFileIngestResult:
@@ -135,6 +144,7 @@ def ingest_local_file(
         overwrite_source_record=overwrite_source_record,
         evidence_enhancer=evidence_enhancer,
         knowledge_synthesizer=knowledge_synthesizer,
+        vault_connector=vault_connector,
         vault_committer=vault_committer,
         now=now,
     )
@@ -148,6 +158,7 @@ def ingest_file_path(
     overwrite_source_record: bool = False,
     evidence_enhancer: EvidenceEnhancer | None = None,
     knowledge_synthesizer: KnowledgeSynthesizer | None = None,
+    vault_connector: VaultConnector | None = None,
     vault_committer: VaultCommitter | None = None,
     now: datetime | None = None,
 ) -> LocalFileIngestResult:
@@ -155,13 +166,15 @@ def ingest_file_path(
 
     logger.info(
         "Starting file ingest path=%s method=%s vault_path=%s archive_provider=%s "
-        "enhance_requested=%s synthesize_requested=%s git_commit_requested=%s",
+        "enhance_requested=%s synthesize_requested=%s connect_requested=%s "
+        "git_commit_requested=%s",
         file_path,
         metadata.ingestion_method,
         settings.obsidian_vault_path,
         settings.archive_provider.value,
         evidence_enhancer is not None,
         knowledge_synthesizer is not None,
+        vault_connector is not None,
         vault_committer is not None,
     )
     if settings.archive_provider is not ArchiveProviderKind.LOCAL:
@@ -261,6 +274,24 @@ def ingest_file_path(
         source_record.path,
         source_record.created,
     )
+    connection_result = _connect_vault(
+        vault_connector,
+        settings,
+        source_id=source_record.source_id,
+        source_record_path=source_record.path,
+        synthesis_result=synthesis_result,
+    )
+    if connection_result is None:
+        logger.info("Vault connection not requested")
+    else:
+        logger.info(
+            "Vault connection finished status=%s source_id=%s touched_paths=%s "
+            "validation_errors=%s",
+            connection_result.status.value,
+            connection_result.source_id,
+            len(connection_result.touched_paths),
+            len(connection_result.validation_errors),
+        )
     git_commit = (
         None
         if vault_committer is None
@@ -272,6 +303,9 @@ def ingest_file_path(
             knowledge_note_paths=()
             if synthesis_result is None or synthesis_result.note is None
             else (synthesis_result.note.path,),
+            connection_note_paths=()
+            if connection_result is None
+            else connection_result.touched_paths,
         )
     )
     if git_commit is None:
@@ -294,8 +328,35 @@ def ingest_file_path(
         enhancement_result=enhancement_result,
         evidence_artifact=evidence_artifact,
         synthesis_result=synthesis_result,
+        connection_result=connection_result,
         source_record=source_record,
         git_commit=git_commit,
+    )
+
+
+def _connect_vault(
+    vault_connector: VaultConnector | None,
+    settings: Settings,
+    *,
+    source_id: str,
+    source_record_path: Path,
+    synthesis_result: KnowledgeSynthesisResult | None,
+) -> VaultConnectionResult | None:
+    if vault_connector is None:
+        return None
+    if synthesis_result is None or synthesis_result.note is None:
+        return VaultConnectionResult(
+            status=ConnectionStatus.SKIPPED,
+            source_id=source_id,
+            validation_errors=(
+                "Connection requires a synthesized primary knowledge note.",
+            ),
+        )
+    return vault_connector.connect(
+        settings.obsidian_vault_path,
+        source_id=source_id,
+        source_record_path=source_record_path,
+        primary_note_path=synthesis_result.note.path,
     )
 
 

@@ -43,6 +43,7 @@ class VaultCommitter(Protocol):
         source_filename: str,
         source_record_path: Path,
         knowledge_note_paths: tuple[Path, ...] = (),
+        connection_note_paths: tuple[Path, ...] = (),
     ) -> VaultGitCommitResult:
         """Commit the generated files for one ingest."""
 
@@ -74,19 +75,26 @@ class GitVaultCommitter:
         source_filename: str,
         source_record_path: Path,
         knowledge_note_paths: tuple[Path, ...] = (),
+        connection_note_paths: tuple[Path, ...] = (),
     ) -> VaultGitCommitResult:
         """Stage and commit one ingest's generated vault files."""
 
         worktree = _ensure_git_repository(vault_path)
         relative_paths = tuple(
             _relative_to_worktree(path, worktree)
-            for path in (source_record_path, *knowledge_note_paths)
+            for path in (
+                source_record_path,
+                *knowledge_note_paths,
+                *connection_note_paths,
+            )
         )
+        knowledge_note_count = len(knowledge_note_paths)
         subject, body = build_ingest_commit_message(
             source_id=source_id,
             source_filename=source_filename,
             source_record_path=relative_paths[0],
-            knowledge_note_paths=relative_paths[1:],
+            knowledge_note_paths=relative_paths[1 : 1 + knowledge_note_count],
+            connection_note_paths=relative_paths[1 + knowledge_note_count :],
         )
         logger.info(
             "Committing vault ingest source_id=%s paths=%s",
@@ -154,6 +162,7 @@ def build_ingest_commit_message(
     source_filename: str,
     source_record_path: Path,
     knowledge_note_paths: tuple[Path, ...] = (),
+    connection_note_paths: tuple[Path, ...] = (),
 ) -> tuple[str, str]:
     """Build a structured vault ingest commit message."""
 
@@ -161,6 +170,11 @@ def build_ingest_commit_message(
     note_lines = (
         [f"- {path.as_posix()}" for path in knowledge_note_paths]
         if knowledge_note_paths
+        else ["- None"]
+    )
+    connection_lines = (
+        [f"- {path.as_posix()}" for path in connection_note_paths]
+        if connection_note_paths
         else ["- None"]
     )
     body = "\n".join(
@@ -171,6 +185,9 @@ def build_ingest_commit_message(
             "",
             "Knowledge notes:",
             *note_lines,
+            "",
+            "Connected vault paths:",
+            *connection_lines,
         ]
     )
     return subject, body
