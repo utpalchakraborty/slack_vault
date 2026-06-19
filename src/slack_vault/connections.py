@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -141,6 +141,7 @@ class ClaudeAgentVaultConnector:
     max_touched_paths: int = 12
     max_changed_lines: int = 400
     model: str | None = None
+    anthropic_api_key: str | None = None
     query_fn: AgentQuery = query
 
     @classmethod
@@ -154,6 +155,7 @@ class ClaudeAgentVaultConnector:
             max_touched_paths=settings.connection.max_touched_paths,
             max_changed_lines=settings.connection.max_changed_lines,
             model=settings.ai.model,
+            anthropic_api_key=settings.ai.anthropic_api_key,
         )
 
     def connect(
@@ -284,11 +286,18 @@ class ClaudeAgentVaultConnector:
         vault_path: Path,
     ) -> _AgentResult:
         options = ClaudeAgentOptions(
+            tools=["Read", "Edit", "MultiEdit", "Write", "Bash", "Skill"],
             cwd=vault_path,
             add_dirs=[str(vault_path)],
             max_turns=self.max_turns,
             model=self.model,
+            mcp_servers={},
+            strict_mcp_config=True,
+            env={}
+            if self.anthropic_api_key is None
+            else {"ANTHROPIC_API_KEY": self.anthropic_api_key},
             permission_mode="acceptEdits",
+            setting_sources=[],
             skills="all",
             plugins=[
                 SdkPluginConfig(type="local", path=str(self.obsidian_skills_path)),
@@ -305,16 +314,23 @@ class ClaudeAgentVaultConnector:
         result_summary: str | None = None
         errors: list[str] = []
         is_error = False
-        async for message in self.query_fn(prompt=prompt, options=options):
-            if isinstance(message, AssistantMessage):
-                assistant_text.extend(_assistant_text(message))
-            if isinstance(message, ResultMessage):
-                result_summary = message.result
-                is_error = message.is_error
-                if message.errors:
-                    errors.extend(str(error) for error in message.errors)
-                if message.api_error_status is not None:
-                    errors.append(f"API error status: {message.api_error_status}")
+        try:
+            async for message in self.query_fn(
+                prompt=_prompt_stream(prompt), options=options
+            ):
+                if isinstance(message, AssistantMessage):
+                    assistant_text.extend(_assistant_text(message))
+                if isinstance(message, ResultMessage):
+                    result_summary = message.result
+                    is_error = message.is_error
+                    if message.errors:
+                        errors.extend(str(error) for error in message.errors)
+                    if message.api_error_status is not None:
+                        errors.append(f"API error status: {message.api_error_status}")
+        except Exception as exc:
+            if not errors:
+                errors.append(str(exc))
+            is_error = True
         return _AgentResult(
             summary=result_summary or "\n".join(assistant_text).strip() or None,
             is_error=is_error,
@@ -324,6 +340,15 @@ class ClaudeAgentVaultConnector:
             if is_error
             else (),
         )
+
+
+async def _prompt_stream(prompt: str) -> AsyncIterator[dict[str, Any]]:
+    yield {
+        "type": "user",
+        "session_id": "",
+        "message": {"role": "user", "content": prompt},
+        "parent_tool_use_id": None,
+    }
 
 
 def inspect_vault_diff(vault_path: Path) -> VaultDiffInspection:

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -279,6 +279,7 @@ def test_claude_agent_vault_connector_validates_agent_changes(
         / "90 System/agent-skills/upstream/obsidian-skills",
         custom_skills_path=vault_path / "90 System/agent-skills/slack-vault",
         max_turns=7,
+        anthropic_api_key="test-key",
         query_fn=fake_query,
     )
 
@@ -297,6 +298,18 @@ def test_claude_agent_vault_connector_validates_agent_changes(
     assert "slack-vault:connect-imported-document" in fake_query.prompt
     assert fake_query.options is not None
     assert fake_query.options.max_turns == 7
+    assert fake_query.options.tools == [
+        "Read",
+        "Edit",
+        "MultiEdit",
+        "Write",
+        "Bash",
+        "Skill",
+    ]
+    assert fake_query.options.env == {"ANTHROPIC_API_KEY": "test-key"}
+    assert fake_query.options.mcp_servers == {}
+    assert fake_query.options.strict_mcp_config is True
+    assert fake_query.options.setting_sources == []
     assert fake_query.options.skills == "all"
     assert fake_query.options.plugins == [
         {
@@ -408,6 +421,28 @@ def test_claude_agent_vault_connector_reports_sdk_errors(
     )
 
 
+def test_claude_agent_vault_connector_preserves_errors_before_sdk_exception(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=vault_path / "upstream",
+        custom_skills_path=vault_path / "custom",
+        query_fn=_ErrorThenRaisesAgentQuery(),
+    )
+
+    result = connector.connect(
+        vault_path,
+        source_id="source-test",
+        source_record_path=vault_path / "20 Sources/sources/source-test.md",
+        primary_note_path=vault_path / "10 Knowledge/imported-note.md",
+    )
+
+    assert result.status is ConnectionStatus.AGENT_FAILED
+    assert result.agent_summary == "Use an Anthropic API key instead."
+    assert result.validation_errors == ("API error status: 403",)
+
+
 def test_claude_agent_vault_connector_uses_assistant_text_summary(
     tmp_path: Path,
 ) -> None:
@@ -490,8 +525,13 @@ class _FakeAgentQuery:
         self.prompt: str | None = None
         self.options: Any | None = None
 
-    async def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
-        self.prompt = prompt
+    async def __call__(
+        self,
+        *,
+        prompt: object,
+        options: object,
+    ) -> AsyncIterator[Message]:
+        self.prompt = await _prompt_text(prompt)
         self.options = options
         if self.unsafe:
             target = self.vault_path / ".obsidian/workspace.json"
@@ -518,7 +558,7 @@ class _ExplodingAgentQuery:
     def __init__(self) -> None:
         self.should_yield = False
 
-    def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+    def __call__(self, *, prompt: object, options: object) -> AsyncIterator[Message]:
         del prompt, options
 
         async def _iterator() -> AsyncIterator[Message]:
@@ -530,7 +570,12 @@ class _ExplodingAgentQuery:
 
 
 class _ErrorAgentQuery:
-    async def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+    async def __call__(
+        self,
+        *,
+        prompt: object,
+        options: object,
+    ) -> AsyncIterator[Message]:
         del prompt, options
         yield ResultMessage(
             subtype="error_max_turns",
@@ -545,8 +590,34 @@ class _ErrorAgentQuery:
         )
 
 
+class _ErrorThenRaisesAgentQuery:
+    async def __call__(
+        self,
+        *,
+        prompt: object,
+        options: object,
+    ) -> AsyncIterator[Message]:
+        del prompt, options
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=True,
+            num_turns=1,
+            session_id="session-test",
+            result="Use an Anthropic API key instead.",
+            api_error_status=403,
+        )
+        raise RuntimeError("Claude Code returned an error result: success")
+
+
 class _AssistantOnlyAgentQuery:
-    async def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+    async def __call__(
+        self,
+        *,
+        prompt: object,
+        options: object,
+    ) -> AsyncIterator[Message]:
         del prompt, options
         yield AssistantMessage(
             content=[
@@ -576,6 +647,22 @@ def _success_message(result: str) -> ResultMessage:
         session_id="session-test",
         result=result,
     )
+
+
+async def _prompt_text(prompt: object) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, AsyncIterable):
+        chunks: list[str] = []
+        async for message in cast(AsyncIterable[dict[str, Any]], prompt):
+            payload = message.get("message")
+            if not isinstance(payload, dict):
+                continue
+            content = payload.get("content")
+            if isinstance(content, str):
+                chunks.append(content)
+        return "\n".join(chunks)
+    raise AssertionError(f"Unexpected prompt type: {type(prompt)}")
 
 
 def _connected_fixture_vault(tmp_path: Path) -> Path:
