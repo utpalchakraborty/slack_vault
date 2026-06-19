@@ -292,6 +292,7 @@ def ingest_file_path(
             len(connection_result.touched_paths),
             len(connection_result.validation_errors),
         )
+    _raise_for_failed_connection(source_record.source_id, connection_result)
     git_commit = (
         None
         if vault_committer is None
@@ -402,3 +403,33 @@ def _raise_for_failed_synthesis(
             stage="knowledge_synthesis",
             reason=reason,
         )
+
+
+def _raise_for_failed_connection(
+    source_id: str,
+    connection_result: VaultConnectionResult | None,
+) -> None:
+    if connection_result is None or connection_result.status in {
+        ConnectionStatus.COMPLETED,
+        ConnectionStatus.SKIPPED,
+        ConnectionStatus.COMMIT_SKIPPED,
+        ConnectionStatus.NOT_REQUESTED,
+    }:
+        return
+    reason = (
+        "; ".join(connection_result.validation_errors)
+        or connection_result.agent_summary
+        or "Vault connection failed."
+    )
+    logger.error(
+        "Requested vault connection failed; stopping ingest before Git commit "
+        "source_id=%s status=%s reason=%s",
+        source_id,
+        connection_result.status.value,
+        reason,
+    )
+    raise IngestProcessingError(
+        source_id=source_id,
+        stage="vault_connection",
+        reason=reason,
+    )

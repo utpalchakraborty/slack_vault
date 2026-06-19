@@ -84,6 +84,15 @@ record and commits the generated vault files.
 make ingest-file FILE=path/to/source.md SYNTHESIZE=1
 ```
 
+To run the vault connection agent after synthesis, add `CONNECT=1`. This uses
+the Claude Agent SDK with the configured Obsidian and Slack Vault skills, lets
+the agent edit vault Markdown, validates the resulting diff, then includes the
+accepted connection paths in the same vault commit.
+
+```sh
+make ingest-file FILE=path/to/source.md SYNTHESIZE=1 CONNECT=1
+```
+
 Enhancement and synthesis can be combined when useful:
 
 ```sh
@@ -202,6 +211,13 @@ local file ingest. Slack ingestion also pushes successful vault Git commits to
 the configured upstream by default so other Obsidian vault clones can pull the
 new notes. Set `SLACK_VAULT_SLACK_INGEST_GIT_PUSH=false` to keep Slack-ingested
 vault commits local during development.
+
+Slack connection is disabled by default while the agent flow is being hardened.
+Enable it with `SLACK_VAULT_SLACK_INGEST_CONNECT=true` after synthesis is also
+enabled. Connection limits are controlled by
+`SLACK_VAULT_CONNECTION_MAX_TURNS`,
+`SLACK_VAULT_CONNECTION_MAX_TOUCHED_PATHS`, and
+`SLACK_VAULT_CONNECTION_MAX_CHANGED_LINES`.
 
 ## Development Checks
 

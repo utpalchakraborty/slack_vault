@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
+
+from claude_agent_sdk import (
+    AssistantMessage,
+    Message,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    TextBlock,
+    ToolPermissionContext,
+    ToolUseBlock,
+)
 
 from slack_vault.connections import (
+    ClaudeAgentVaultConnector,
+    ConnectionStatus,
+    VaultDiffInspection,
+    VaultDiffRename,
     VaultDiffValidationConfig,
+    _can_use_agent_tool,
     inspect_vault_diff,
     validate_connection_diff,
 )
@@ -26,7 +45,7 @@ def test_validate_connection_diff_accepts_expected_markdown_changes(
                 "",
                 "# Imported Note",
                 "",
-                "This now links to [[related-note|Related Note]].",
+                "This now links to [[Related Alias]].",
                 "",
                 "## Sources",
                 "",
@@ -174,6 +193,391 @@ def test_validate_connection_diff_rejects_removed_source_reference(
     assert any("no longer references source ID" in error for error in result.errors)
 
 
+def test_validate_connection_diff_rejects_destructive_or_large_diffs(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    inspection = VaultDiffInspection(
+        touched_paths=(
+            Path("10 Knowledge/imported-note.md"),
+            Path("30 Maps/topic-index.md"),
+            Path("30 Maps/renamed-index.md"),
+        ),
+        changed_paths=(Path("10 Knowledge/imported-note.md"),),
+        added_paths=(),
+        deleted_paths=(Path("30 Maps/topic-index.md"),),
+        renamed_paths=(
+            VaultDiffRename(
+                old_path=Path("30 Maps/topic-index.md"),
+                new_path=Path("30 Maps/renamed-index.md"),
+            ),
+        ),
+        diff_stat="",
+        changed_line_count=10,
+    )
+
+    result = validate_connection_diff(
+        vault_path,
+        inspection,
+        VaultDiffValidationConfig(
+            source_id="source-test",
+            primary_note_path=Path("10 Knowledge/imported-note.md"),
+            max_touched_paths=1,
+            max_changed_lines=1,
+        ),
+    )
+
+    assert result.ok is False
+    assert result.stageable_paths == ()
+    assert any("too many paths" in error for error in result.errors)
+    assert any("too many lines" in error for error in result.errors)
+    assert any("deleted a path" in error for error in result.errors)
+    assert any("renamed a path" in error for error in result.errors)
+
+
+def test_validate_connection_diff_rejects_empty_agent_diffs(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+
+    result = validate_connection_diff(
+        vault_path,
+        VaultDiffInspection(
+            touched_paths=(),
+            changed_paths=(),
+            added_paths=(),
+            deleted_paths=(),
+            renamed_paths=(),
+            diff_stat="",
+            changed_line_count=0,
+        ),
+        VaultDiffValidationConfig(
+            source_id="source-test",
+            primary_note_path=Path("10 Knowledge/imported-note.md"),
+        ),
+    )
+
+    assert result.ok is False
+    assert result.errors == ("No vault changes were produced by the connection agent.",)
+
+
+def test_claude_agent_vault_connector_validates_agent_changes(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    primary_note = vault_path / "10 Knowledge/imported-note.md"
+    primary_note.write_text(
+        primary_note.read_text(encoding="utf-8").replace(
+            "Initial body.",
+            "Baseline synthesized body.",
+        ),
+        encoding="utf-8",
+    )
+    fake_query = _FakeAgentQuery(vault_path)
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=vault_path
+        / "90 System/agent-skills/upstream/obsidian-skills",
+        custom_skills_path=vault_path / "90 System/agent-skills/slack-vault",
+        max_turns=7,
+        query_fn=fake_query,
+    )
+
+    result = connector.connect(
+        vault_path,
+        source_id="source-test",
+        source_record_path=vault_path / "20 Sources/sources/source-test.md",
+        primary_note_path=primary_note,
+    )
+
+    assert result.status is ConnectionStatus.COMPLETED
+    assert result.touched_paths == (Path("30 Maps/topic-index.md"),)
+    assert result.agent_summary == "Connected imported note."
+    assert fake_query.prompt is not None
+    assert "Source ID: source-test" in fake_query.prompt
+    assert "slack-vault:connect-imported-document" in fake_query.prompt
+    assert fake_query.options is not None
+    assert fake_query.options.max_turns == 7
+    assert fake_query.options.skills == "all"
+    assert fake_query.options.plugins == [
+        {
+            "type": "local",
+            "path": str(vault_path / "90 System/agent-skills/upstream/obsidian-skills"),
+        },
+        {
+            "type": "local",
+            "path": str(vault_path / "90 System/agent-skills/slack-vault"),
+        },
+    ]
+    permission = asyncio.run(
+        fake_query.options.can_use_tool(
+            "Write",
+            {"file_path": str(vault_path / "30 Maps/another-index.md")},
+            ToolPermissionContext(),
+        )
+    )
+    assert isinstance(permission, PermissionResultAllow)
+
+
+def test_claude_agent_vault_connector_reports_validation_failure(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    fake_query = _FakeAgentQuery(vault_path, unsafe=True)
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=vault_path / "upstream",
+        custom_skills_path=vault_path / "custom",
+        query_fn=fake_query,
+    )
+
+    result = connector.connect(
+        vault_path,
+        source_id="source-test",
+        source_record_path=vault_path / "20 Sources/sources/source-test.md",
+        primary_note_path=vault_path / "10 Knowledge/imported-note.md",
+    )
+
+    assert result.status is ConnectionStatus.VALIDATION_FAILED
+    assert any("protected path" in error for error in result.validation_errors)
+
+
+def test_claude_agent_vault_connector_skips_without_primary_note(
+    tmp_path: Path,
+) -> None:
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=tmp_path / "upstream",
+        custom_skills_path=tmp_path / "custom",
+        query_fn=_ExplodingAgentQuery(),
+    )
+
+    result = connector.connect(
+        tmp_path,
+        source_id="source-test",
+        source_record_path=tmp_path / "20 Sources/sources/source-test.md",
+        primary_note_path=None,
+    )
+
+    assert result.status is ConnectionStatus.SKIPPED
+    assert result.validation_errors == (
+        "Connection requires a synthesized primary knowledge note.",
+    )
+
+
+def test_claude_agent_vault_connector_reports_agent_exceptions(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=vault_path / "upstream",
+        custom_skills_path=vault_path / "custom",
+        query_fn=_ExplodingAgentQuery(),
+    )
+
+    result = connector.connect(
+        vault_path,
+        source_id="source-test",
+        source_record_path=vault_path / "20 Sources/sources/source-test.md",
+        primary_note_path=vault_path / "10 Knowledge/imported-note.md",
+    )
+
+    assert result.status is ConnectionStatus.AGENT_FAILED
+    assert result.validation_errors == ("agent exploded",)
+
+
+def test_claude_agent_vault_connector_reports_sdk_errors(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=vault_path / "upstream",
+        custom_skills_path=vault_path / "custom",
+        query_fn=_ErrorAgentQuery(),
+    )
+
+    result = connector.connect(
+        vault_path,
+        source_id="source-test",
+        source_record_path=vault_path / "20 Sources/sources/source-test.md",
+        primary_note_path=vault_path / "10 Knowledge/imported-note.md",
+    )
+
+    assert result.status is ConnectionStatus.AGENT_FAILED
+    assert result.agent_summary == "Could not connect."
+    assert result.validation_errors == (
+        "model refused",
+        "API error status: 500",
+    )
+
+
+def test_claude_agent_vault_connector_uses_assistant_text_summary(
+    tmp_path: Path,
+) -> None:
+    vault_path = _connected_fixture_vault(tmp_path)
+    connector = ClaudeAgentVaultConnector(
+        obsidian_skills_path=vault_path / "upstream",
+        custom_skills_path=vault_path / "custom",
+        query_fn=_AssistantOnlyAgentQuery(),
+    )
+
+    result = connector.connect(
+        vault_path,
+        source_id="source-test",
+        source_record_path=vault_path / "20 Sources/sources/source-test.md",
+        primary_note_path=vault_path / "10 Knowledge/imported-note.md",
+    )
+
+    assert result.status is ConnectionStatus.VALIDATION_FAILED
+    assert result.agent_summary == "I inspected likely links.\nTool used: Edit"
+
+
+def test_connection_agent_permissions_deny_unsafe_tools(tmp_path: Path) -> None:
+    vault_path = tmp_path / "vault"
+    vault_path.mkdir()
+
+    denied_git = asyncio.run(
+        _can_use_agent_tool(
+            vault_path,
+            "Bash",
+            {"command": "git status"},
+            ToolPermissionContext(),
+        )
+    )
+    allowed_obsidian = asyncio.run(
+        _can_use_agent_tool(
+            vault_path,
+            "Bash",
+            {"command": "obsidian search query=connections"},
+            ToolPermissionContext(),
+        )
+    )
+    denied_protected = asyncio.run(
+        _can_use_agent_tool(
+            vault_path,
+            "Write",
+            {"file_path": str(vault_path / ".obsidian/workspace.json")},
+            ToolPermissionContext(),
+        )
+    )
+    denied_outside = asyncio.run(
+        _can_use_agent_tool(
+            vault_path,
+            "Edit",
+            {"path": str(tmp_path / "outside.md")},
+            ToolPermissionContext(),
+        )
+    )
+    allowed_markdown = asyncio.run(
+        _can_use_agent_tool(
+            vault_path,
+            "MultiEdit",
+            {"path": str(vault_path / "10 Knowledge/follow-up.md")},
+            ToolPermissionContext(),
+        )
+    )
+
+    assert isinstance(denied_git, PermissionResultDeny)
+    assert isinstance(allowed_obsidian, PermissionResultAllow)
+    assert isinstance(denied_protected, PermissionResultDeny)
+    assert "protected path" in denied_protected.message
+    assert isinstance(denied_outside, PermissionResultDeny)
+    assert "unsafe path" in denied_outside.message
+    assert isinstance(allowed_markdown, PermissionResultAllow)
+
+
+class _FakeAgentQuery:
+    def __init__(self, vault_path: Path, *, unsafe: bool = False) -> None:
+        self.vault_path = vault_path
+        self.unsafe = unsafe
+        self.prompt: str | None = None
+        self.options: Any | None = None
+
+    async def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+        self.prompt = prompt
+        self.options = options
+        if self.unsafe:
+            target = self.vault_path / ".obsidian/workspace.json"
+            target.parent.mkdir(exist_ok=True)
+            target.write_text("{}", encoding="utf-8")
+        else:
+            target = self.vault_path / "30 Maps/topic-index.md"
+            target.write_text(
+                "# Topic Index\n\n- [[imported-note|Imported Note]]\n",
+                encoding="utf-8",
+            )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="session-test",
+            result="Connected imported note.",
+        )
+
+
+class _ExplodingAgentQuery:
+    def __init__(self) -> None:
+        self.should_yield = False
+
+    def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+        del prompt, options
+
+        async def _iterator() -> AsyncIterator[Message]:
+            if self.should_yield:
+                yield _success_message("unreachable")
+            raise RuntimeError("agent exploded")
+
+        return _iterator()
+
+
+class _ErrorAgentQuery:
+    async def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+        del prompt, options
+        yield ResultMessage(
+            subtype="error_max_turns",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=True,
+            num_turns=1,
+            session_id="session-test",
+            result="Could not connect.",
+            errors=["model refused"],
+            api_error_status=500,
+        )
+
+
+class _AssistantOnlyAgentQuery:
+    async def __call__(self, *, prompt: str, options: object) -> AsyncIterator[Message]:
+        del prompt, options
+        yield AssistantMessage(
+            content=[
+                TextBlock(text="I inspected likely links."),
+                ToolUseBlock(id="tool-1", name="Edit", input={}),
+            ],
+            model="claude-test",
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="session-test",
+            result=None,
+        )
+
+
+def _success_message(result: str) -> ResultMessage:
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="session-test",
+        result=result,
+    )
+
+
 def _connected_fixture_vault(tmp_path: Path) -> Path:
     vault_path = tmp_path / "vault"
     _init_git_repo(vault_path)
@@ -204,6 +608,7 @@ def _connected_fixture_vault(tmp_path: Path) -> Path:
             [
                 "---",
                 'title: "Related Note"',
+                'aliases: ["Related Alias"]',
                 "---",
                 "",
                 "# Related Note",

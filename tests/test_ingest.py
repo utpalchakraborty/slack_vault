@@ -244,6 +244,44 @@ def test_ingest_local_file_skips_connector_without_synthesized_note(
     assert connector.calls == 0
 
 
+def test_ingest_local_file_stops_before_commit_when_connection_fails(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.md"
+    source.write_text("# Overview\n\nSource evidence.", encoding="utf-8")
+    vault_path = tmp_path / "vault"
+    settings = Settings.from_env(
+        {
+            "SLACK_VAULT_ARCHIVE_PATH": str(tmp_path / "archive"),
+            "SLACK_VAULT_OBSIDIAN_PATH": str(vault_path),
+        }
+    )
+    synthesizer = _FakeSynthesizer(vault_path)
+    connector = _FailingConnector()
+    committer = _FakeCommitter()
+
+    with pytest.raises(
+        IngestProcessingError,
+        match="vault_connection failed",
+    ) as exc_info:
+        ingest_local_file(
+            source,
+            settings,
+            knowledge_synthesizer=synthesizer,
+            vault_connector=connector,
+            vault_committer=committer,
+        )
+
+    assert exc_info.value.stage == "vault_connection"
+    assert exc_info.value.reason == "unsafe connection change"
+    assert connector.calls == 1
+    assert connector.source_record_exists is True
+    assert committer.calls == 0
+    assert (
+        vault_path / "20 Sources/sources" / f"{exc_info.value.source_id}.md"
+    ).exists()
+
+
 def test_ingest_local_file_stops_before_commit_when_synthesis_fails(
     tmp_path: Path,
 ) -> None:
@@ -510,6 +548,29 @@ class _FakeConnector:
             primary_note_path=primary_note_path,
             touched_paths=(touched_path,),
             agent_summary="Connected fake note.",
+        )
+
+
+class _FailingConnector:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.source_record_exists = False
+
+    def connect(
+        self,
+        vault_path: Path,
+        *,
+        source_id: str,
+        source_record_path: Path,
+        primary_note_path: Path | None,
+    ) -> VaultConnectionResult:
+        del vault_path, primary_note_path
+        self.calls += 1
+        self.source_record_exists = source_record_path.exists()
+        return VaultConnectionResult(
+            status=ConnectionStatus.VALIDATION_FAILED,
+            source_id=source_id,
+            validation_errors=("unsafe connection change",),
         )
 
 

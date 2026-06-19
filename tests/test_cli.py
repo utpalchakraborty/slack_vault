@@ -7,6 +7,7 @@ import pytest
 
 from slack_vault.cli import main
 from slack_vault.config import Settings
+from slack_vault.connections import ConnectionStatus, VaultConnectionResult
 from slack_vault.ops_state import IngestionJob, IngestionJobStatus, QAJob, QAJobStatus
 from slack_vault.qa import AnswerCitation, AnswerResult
 from slack_vault.retrieval import AnswerContext
@@ -167,6 +168,48 @@ def test_ingest_file_can_report_synthesized_note(
     assert "Knowledge note:" in captured.out
     assert "Created knowledge note: True" in captured.out
     assert "Vault Git commit: not_requested" in captured.out
+
+
+def test_ingest_file_can_report_connection_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source evidence", encoding="utf-8")
+    vault_path = tmp_path / "vault"
+    monkeypatch.setenv("SLACK_VAULT_ARCHIVE_PATH", str(tmp_path / "archive"))
+    monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(vault_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "slack_vault.cli.AnthropicAIProvider.from_settings",
+        _fake_provider_from_settings,
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.AnthropicKnowledgeSynthesizer",
+        _FakeCliSynthesizer,
+    )
+    monkeypatch.setattr(
+        "slack_vault.cli.ClaudeAgentVaultConnector.from_settings",
+        lambda settings: _FakeCliConnector(vault_path),
+    )
+
+    exit_code = main(
+        [
+            "ingest-file",
+            str(source),
+            "--synthesize",
+            "--connect",
+            "--no-git-commit",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Connection status: completed" in captured.out
+    assert "Connected vault paths:" in captured.out
+    assert "- " in captured.out
+    assert "Connection summary: Connected fake note." in captured.out
 
 
 def test_ingest_file_reports_failed_synthesis_without_committing(
@@ -670,6 +713,29 @@ class _FakeCliSynthesizer:
             output_tokens=1,
             cache_creation_input_tokens=0,
             cache_read_input_tokens=0,
+        )
+
+
+class _FakeCliConnector:
+    def __init__(self, vault_path: Path) -> None:
+        self.vault_path = vault_path
+
+    def connect(
+        self,
+        vault_path: Path,
+        *,
+        source_id: str,
+        source_record_path: Path,
+        primary_note_path: Path | None,
+    ) -> VaultConnectionResult:
+        del vault_path, source_record_path
+        touched_path = self.vault_path / "30 Maps/topic-index.md"
+        return VaultConnectionResult(
+            status=ConnectionStatus.COMPLETED,
+            source_id=source_id,
+            primary_note_path=primary_note_path,
+            touched_paths=(touched_path,),
+            agent_summary="Connected fake note.",
         )
 
 

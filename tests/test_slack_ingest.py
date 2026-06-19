@@ -8,6 +8,7 @@ import pytest
 
 from slack_vault.archive import ArchivedSourceRef, SourceIngestMetadata
 from slack_vault.config import ArchiveProviderKind, Settings
+from slack_vault.connections import ClaudeAgentVaultConnector
 from slack_vault.evidence_store import EvidenceArtifactWriteResult
 from slack_vault.extraction import ExtractionResult
 from slack_vault.git_vault import GitVaultCommitter, VaultGitCommitResult
@@ -149,6 +150,7 @@ def test_default_slack_ingest_dependencies_respect_runtime_flags(
 
     assert disabled_dependencies.evidence_enhancer is None
     assert disabled_dependencies.knowledge_synthesizer is None
+    assert disabled_dependencies.vault_connector is None
     assert disabled_dependencies.vault_committer is None
 
     enabled = Settings.from_env(
@@ -159,12 +161,14 @@ def test_default_slack_ingest_dependencies_respect_runtime_flags(
             "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE": "true",
             "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT": "true",
             "SLACK_VAULT_SLACK_INGEST_GIT_PUSH": "true",
+            "SLACK_VAULT_SLACK_INGEST_CONNECT": "true",
         }
     )
     enabled_dependencies = default_slack_ingest_dependencies(enabled)
 
     assert enabled_dependencies.evidence_enhancer is not None
     assert enabled_dependencies.knowledge_synthesizer is not None
+    assert isinstance(enabled_dependencies.vault_connector, ClaudeAgentVaultConnector)
     assert enabled_dependencies.vault_committer is not None
     assert isinstance(enabled_dependencies.vault_committer, GitVaultCommitter)
     assert enabled_dependencies.vault_committer.push_after_commit is True
@@ -309,6 +313,7 @@ def _no_dependencies(settings: Settings) -> SlackIngestDependencies:
     return SlackIngestDependencies(
         evidence_enhancer=None,
         knowledge_synthesizer=None,
+        vault_connector=None,
         vault_committer=_FakeCommitter(),
     )
 
@@ -340,6 +345,7 @@ class _FakeIngestPath:
         overwrite_source_record: bool = False,
         evidence_enhancer: object | None = None,
         knowledge_synthesizer: object | None = None,
+        vault_connector: object | None = None,
         vault_committer: object | None = None,
         now: datetime | None = None,
     ) -> LocalFileIngestResult:

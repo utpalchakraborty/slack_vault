@@ -15,7 +15,7 @@ ingest-file:
 ifndef FILE
 	$(error FILE is required. Usage: make ingest-file FILE=path/to/source)
 endif
-	$(UV_RUN) slack-vault ingest-file "$(FILE)" $(if $(UPLOADED_BY),--uploaded-by "$(UPLOADED_BY)") $(if $(ENHANCE),--enhance) $(if $(SYNTHESIZE),--synthesize) $(if $(NO_GIT_COMMIT),--no-git-commit)
+	$(UV_RUN) slack-vault ingest-file "$(FILE)" $(if $(UPLOADED_BY),--uploaded-by "$(UPLOADED_BY)") $(if $(ENHANCE),--enhance) $(if $(SYNTHESIZE),--synthesize) $(if $(CONNECT),--connect) $(if $(NO_GIT_COMMIT),--no-git-commit)
 
 ask:
 ifndef QUESTION

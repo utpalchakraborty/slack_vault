@@ -10,6 +10,8 @@ from pathlib import Path
 from slack_vault.ai import AITextProvider, AnthropicAIProvider, RetryingAITextProvider
 from slack_vault.config import Settings
 from slack_vault.connections import (
+    ClaudeAgentVaultConnector,
+    VaultConnector,
     VaultDiffValidationConfig,
     inspect_vault_diff,
     validate_connection_diff,
@@ -85,6 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--synthesize",
         action="store_true",
         help="Run AI classification and knowledge-note synthesis after extraction.",
+    )
+    ingest_parser.add_argument(
+        "--connect",
+        action="store_true",
+        help=(
+            "Run the Claude Agent SDK vault connection step after knowledge-note "
+            "synthesis."
+        ),
     )
     ingest_parser.add_argument(
         "--no-git-commit",
@@ -191,9 +201,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Log file: {log_path}")
         evidence_enhancer: EvidenceEnhancer | None = None
         knowledge_synthesizer: KnowledgeSynthesizer | None = None
+        vault_connector: VaultConnector | None = None
         vault_committer = None if args.no_git_commit else GitVaultCommitter()
         if vault_committer is not None:
             vault_committer.ensure_clean_worktree(settings.obsidian_vault_path)
+        if args.connect and not args.synthesize:
+            raise ValueError("--connect requires --synthesize")
         ai_provider: AITextProvider | None = None
         if args.enhance or args.synthesize:
             ai_provider = RetryingAITextProvider(
@@ -208,6 +221,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if ai_provider is None:
                 raise ValueError("AI provider is required for knowledge synthesis")
             knowledge_synthesizer = AnthropicKnowledgeSynthesizer(ai_provider)
+        if args.connect:
+            vault_connector = ClaudeAgentVaultConnector.from_settings(settings)
         try:
             ingest_result = ingest_local_file(
                 Path(args.path),
@@ -216,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overwrite_source_record=args.overwrite_source_record,
                 evidence_enhancer=evidence_enhancer,
                 knowledge_synthesizer=knowledge_synthesizer,
+                vault_connector=vault_connector,
                 vault_committer=vault_committer,
             )
         except IngestProcessingError as exc:
@@ -259,6 +275,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Created knowledge note: {synthesis_result.note.created}")
             if synthesis_result.error_message is not None:
                 print(f"Synthesis note: {synthesis_result.error_message}")
+        connection_status = (
+            "not_requested"
+            if ingest_result.connection_result is None
+            else ingest_result.connection_result.status.value
+        )
+        print(f"Connection status: {connection_status}")
+        if ingest_result.connection_result is not None:
+            if ingest_result.connection_result.touched_paths:
+                print("Connected vault paths:")
+                for path in ingest_result.connection_result.touched_paths:
+                    print(f"- {path}")
+            if ingest_result.connection_result.agent_summary is not None:
+                print(
+                    "Connection summary: "
+                    f"{ingest_result.connection_result.agent_summary}"
+                )
         if ingest_result.git_commit is None:
             print("Vault Git commit: not_requested")
         elif ingest_result.git_commit.committed:

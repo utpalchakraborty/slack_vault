@@ -11,6 +11,7 @@ from typing import Protocol
 from slack_vault.ai import AnthropicAIProvider, RetryingAITextProvider
 from slack_vault.archive import SourceIngestMetadata
 from slack_vault.config import Settings
+from slack_vault.connections import ClaudeAgentVaultConnector, VaultConnector
 from slack_vault.enhancement import AnthropicEvidenceEnhancer, EvidenceEnhancer
 from slack_vault.git_vault import GitVaultCommitter, VaultCommitter
 from slack_vault.ingest import (
@@ -79,6 +80,7 @@ class IngestPath(Protocol):
         overwrite_source_record: bool = False,
         evidence_enhancer: EvidenceEnhancer | None = None,
         knowledge_synthesizer: KnowledgeSynthesizer | None = None,
+        vault_connector: VaultConnector | None = None,
         vault_committer: VaultCommitter | None = None,
         now: datetime | None = None,
     ) -> LocalFileIngestResult:
@@ -91,6 +93,7 @@ class SlackIngestDependencies:
 
     evidence_enhancer: EvidenceEnhancer | None
     knowledge_synthesizer: KnowledgeSynthesizer | None
+    vault_connector: VaultConnector | None
     vault_committer: VaultCommitter | None
 
 
@@ -183,6 +186,7 @@ class SlackIngestionService:
                 metadata=_source_metadata(job, file_info, self.settings),
                 evidence_enhancer=dependencies.evidence_enhancer,
                 knowledge_synthesizer=dependencies.knowledge_synthesizer,
+                vault_connector=dependencies.vault_connector,
                 vault_committer=dependencies.vault_committer,
             )
             knowledge_note_paths = _knowledge_note_paths(ingest_result)
@@ -257,6 +261,7 @@ def default_slack_ingest_dependencies(settings: Settings) -> SlackIngestDependen
 
     evidence_enhancer: EvidenceEnhancer | None = None
     knowledge_synthesizer: KnowledgeSynthesizer | None = None
+    vault_connector: VaultConnector | None = None
     ai_provider: RetryingAITextProvider | None = None
     if settings.ingestion.slack_ingest_enhance or (
         settings.ingestion.slack_ingest_synthesize
@@ -273,6 +278,8 @@ def default_slack_ingest_dependencies(settings: Settings) -> SlackIngestDependen
         if ai_provider is None:
             raise ValueError("AI provider is required for Slack knowledge synthesis")
         knowledge_synthesizer = AnthropicKnowledgeSynthesizer(ai_provider)
+    if settings.connection.slack_ingest_connect:
+        vault_connector = ClaudeAgentVaultConnector.from_settings(settings)
     vault_committer: VaultCommitter | None = (
         GitVaultCommitter(
             push_after_commit=settings.ingestion.slack_ingest_git_push,
@@ -283,6 +290,7 @@ def default_slack_ingest_dependencies(settings: Settings) -> SlackIngestDependen
     return SlackIngestDependencies(
         evidence_enhancer=evidence_enhancer,
         knowledge_synthesizer=knowledge_synthesizer,
+        vault_connector=vault_connector,
         vault_committer=vault_committer,
     )
 
@@ -346,6 +354,15 @@ def _success_message(
             "Knowledge notes: "
             + ", ".join(f"`{path}`" for path in knowledge_note_paths)
         )
+    if result.connection_result is not None:
+        lines.append(f"Connection status: {result.connection_result.status.value}")
+        if result.connection_result.touched_paths:
+            lines.append(
+                "Connected vault paths: "
+                + ", ".join(
+                    f"`{path}`" for path in result.connection_result.touched_paths
+                )
+            )
     if result.git_commit is None:
         lines.append("Vault Git commit: not requested")
     elif result.git_commit.committed:

@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import subprocess
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    Message,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    SdkPluginConfig,
+    TextBlock,
+    ToolPermissionContext,
+    ToolUseBlock,
+    query,
+)
+
+from slack_vault.config import Settings
 from slack_vault.source_registry import source_record_path
 
 logger = logging.getLogger(__name__)
@@ -26,6 +43,7 @@ DEFAULT_PROTECTED_CONNECTION_PATHS = (
 )
 _WIKILINK_PATTERN = re.compile(r"(?<!!)\[\[([^\]]+)\]\]")
 _FRONTMATTER_BOUNDARY = "---\n"
+AgentQuery = Callable[..., AsyncIterator[Message]]
 
 
 class ConnectionStatus(StrEnum):
@@ -111,6 +129,201 @@ class VaultConnector(Protocol):
     ) -> VaultConnectionResult:
         """Connect a newly imported source to existing vault notes."""
         ...
+
+
+@dataclass(frozen=True)
+class ClaudeAgentVaultConnector:
+    """Claude Agent SDK backed vault connector."""
+
+    obsidian_skills_path: Path
+    custom_skills_path: Path
+    max_turns: int = 20
+    max_touched_paths: int = 12
+    max_changed_lines: int = 400
+    model: str | None = None
+    query_fn: AgentQuery = query
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> ClaudeAgentVaultConnector:
+        """Build a live connector from application settings."""
+
+        return cls(
+            obsidian_skills_path=settings.resolved_obsidian_skills_path,
+            custom_skills_path=settings.resolved_custom_skills_path,
+            max_turns=settings.connection.max_turns,
+            max_touched_paths=settings.connection.max_touched_paths,
+            max_changed_lines=settings.connection.max_changed_lines,
+            model=settings.ai.model,
+        )
+
+    def connect(
+        self,
+        vault_path: Path,
+        *,
+        source_id: str,
+        source_record_path: Path,
+        primary_note_path: Path | None,
+    ) -> VaultConnectionResult:
+        """Run the connection agent and validate its vault diff."""
+
+        if primary_note_path is None:
+            return VaultConnectionResult(
+                status=ConnectionStatus.SKIPPED,
+                source_id=source_id,
+                validation_errors=(
+                    "Connection requires a synthesized primary knowledge note.",
+                ),
+            )
+
+        before = inspect_vault_diff(vault_path)
+        prompt = self.build_prompt(
+            vault_path,
+            source_id=source_id,
+            source_record_path=source_record_path,
+            primary_note_path=primary_note_path,
+        )
+        try:
+            agent_result = asyncio.run(
+                self._run_agent(
+                    prompt,
+                    vault_path=vault_path,
+                )
+            )
+        except Exception as exc:
+            logger.exception("Vault connection agent failed source_id=%s", source_id)
+            return VaultConnectionResult(
+                status=ConnectionStatus.AGENT_FAILED,
+                source_id=source_id,
+                primary_note_path=primary_note_path,
+                validation_errors=(str(exc),),
+            )
+
+        after = inspect_vault_diff(vault_path)
+        validation = validate_connection_diff(
+            vault_path,
+            after,
+            VaultDiffValidationConfig(
+                source_id=source_id,
+                primary_note_path=primary_note_path,
+                max_touched_paths=self.max_touched_paths,
+                max_changed_lines=self.max_changed_lines,
+            ),
+        )
+        if agent_result.is_error:
+            return VaultConnectionResult(
+                status=ConnectionStatus.AGENT_FAILED,
+                source_id=source_id,
+                primary_note_path=primary_note_path,
+                touched_paths=_agent_touched_paths(before, after),
+                validation_errors=tuple(agent_result.errors),
+                agent_summary=agent_result.summary,
+            )
+        if not validation.ok:
+            return VaultConnectionResult(
+                status=ConnectionStatus.VALIDATION_FAILED,
+                source_id=source_id,
+                primary_note_path=primary_note_path,
+                touched_paths=_agent_touched_paths(before, after),
+                validation_errors=validation.errors,
+                agent_summary=agent_result.summary,
+            )
+        return VaultConnectionResult(
+            status=ConnectionStatus.COMPLETED,
+            source_id=source_id,
+            primary_note_path=primary_note_path,
+            touched_paths=_agent_touched_paths(before, after),
+            agent_summary=agent_result.summary,
+        )
+
+    def build_prompt(
+        self,
+        vault_path: Path,
+        *,
+        source_id: str,
+        source_record_path: Path,
+        primary_note_path: Path,
+    ) -> str:
+        """Build the connection-agent prompt."""
+
+        return "\n".join(
+            [
+                "Connect this imported Slack Vault document into the Obsidian "
+                "vault graph.",
+                "",
+                f"Vault path: {vault_path}",
+                f"Source ID: {source_id}",
+                "Source record path: "
+                f"{_display_vault_path(vault_path, source_record_path)}",
+                "Primary knowledge note path: "
+                f"{_display_vault_path(vault_path, primary_note_path)}",
+                "",
+                "Use the slack-vault:connect-imported-document workflow.",
+                "Use upstream Obsidian skills when useful for Markdown and "
+                "Obsidian CLI behavior.",
+                "",
+                "Allowed edit folders:",
+                "- 10 Knowledge/**/*.md",
+                "- 20 Sources/sources/**/*.md",
+                "- 30 Maps/**/*.md",
+                "",
+                "Do not run Git commands. Do not edit .obsidian/, .git/, "
+                "archives, logs, SQLite databases, Slack downloads, original "
+                "source files, or 90 System/agent-skills/**.",
+                "Preserve source citations and the ## Sources section.",
+                "Prefer sparse, useful links over broad keyword linking.",
+                "",
+                "Finish with Edited files, Connections added, Skipped "
+                "candidates, and Validation notes.",
+            ]
+        )
+
+    async def _run_agent(
+        self,
+        prompt: str,
+        *,
+        vault_path: Path,
+    ) -> _AgentResult:
+        options = ClaudeAgentOptions(
+            cwd=vault_path,
+            add_dirs=[str(vault_path)],
+            max_turns=self.max_turns,
+            model=self.model,
+            permission_mode="acceptEdits",
+            skills="all",
+            plugins=[
+                SdkPluginConfig(type="local", path=str(self.obsidian_skills_path)),
+                SdkPluginConfig(type="local", path=str(self.custom_skills_path)),
+            ],
+            can_use_tool=lambda tool_name, tool_input, context: _can_use_agent_tool(
+                vault_path,
+                tool_name,
+                tool_input,
+                context,
+            ),
+        )
+        assistant_text: list[str] = []
+        result_summary: str | None = None
+        errors: list[str] = []
+        is_error = False
+        async for message in self.query_fn(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                assistant_text.extend(_assistant_text(message))
+            if isinstance(message, ResultMessage):
+                result_summary = message.result
+                is_error = message.is_error
+                if message.errors:
+                    errors.extend(str(error) for error in message.errors)
+                if message.api_error_status is not None:
+                    errors.append(f"API error status: {message.api_error_status}")
+        return _AgentResult(
+            summary=result_summary or "\n".join(assistant_text).strip() or None,
+            is_error=is_error,
+            errors=tuple(errors)
+            if errors
+            else ("Agent run failed.",)
+            if is_error
+            else (),
+        )
 
 
 def inspect_vault_diff(vault_path: Path) -> VaultDiffInspection:
@@ -208,6 +421,13 @@ def validate_connection_diff(
 
 
 @dataclass(frozen=True)
+class _AgentResult:
+    summary: str | None
+    is_error: bool
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class _ParsedGitStatus:
     touched_paths: tuple[Path, ...]
     changed_paths: tuple[Path, ...]
@@ -277,6 +497,97 @@ def _validate_touched_path(
     if not any(_is_relative_to(path, allowed_path) for allowed_path in allowed_paths):
         errors.append(f"Connection touched a disallowed path: {path.as_posix()}.")
     return tuple(errors)
+
+
+async def _can_use_agent_tool(
+    vault_path: Path,
+    tool_name: str,
+    tool_input: dict[str, object],
+    context: ToolPermissionContext,
+) -> PermissionResultAllow | PermissionResultDeny:
+    del context
+    if tool_name == "Bash":
+        command = str(tool_input.get("command", ""))
+        if _is_forbidden_shell_command(command):
+            return PermissionResultDeny(
+                message="Slack Vault connection agents may not run Git or "
+                "destructive shell commands."
+            )
+        return PermissionResultAllow()
+    if tool_name in {"Write", "Edit", "MultiEdit"}:
+        for path in _tool_file_paths(tool_input):
+            errors = _validate_touched_path(
+                _relative_tool_path(vault_path, path),
+                allowed_paths=DEFAULT_ALLOWED_CONNECTION_PATHS,
+                protected_paths=DEFAULT_PROTECTED_CONNECTION_PATHS,
+            )
+            if errors:
+                return PermissionResultDeny(message=" ".join(errors))
+    return PermissionResultAllow()
+
+
+def _is_forbidden_shell_command(command: str) -> bool:
+    tokens = {token.strip(";&|()") for token in command.split()}
+    if tokens & {
+        "git",
+        "rm",
+        "mv",
+        "cp",
+        "chmod",
+        "chown",
+        "python",
+        "python3",
+        "uv",
+        "curl",
+        "wget",
+    }:
+        return True
+    return ".git" in command or "90 System/agent-skills" in command
+
+
+def _tool_file_paths(tool_input: dict[str, object]) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for key in ("file_path", "path"):
+        value = tool_input.get(key)
+        if isinstance(value, str):
+            paths.append(Path(value))
+    return tuple(paths)
+
+
+def _relative_tool_path(vault_path: Path, path: Path) -> Path:
+    if not path.is_absolute():
+        return path
+    try:
+        return path.resolve().relative_to(vault_path.resolve())
+    except ValueError:
+        return path
+
+
+def _assistant_text(message: AssistantMessage) -> tuple[str, ...]:
+    texts: list[str] = []
+    for block in message.content:
+        if isinstance(block, TextBlock):
+            texts.append(block.text)
+        elif isinstance(block, ToolUseBlock):
+            texts.append(f"Tool used: {block.name}")
+    return tuple(texts)
+
+
+def _agent_touched_paths(
+    before: VaultDiffInspection,
+    after: VaultDiffInspection,
+) -> tuple[Path, ...]:
+    before_paths = {path.as_posix() for path in before.touched_paths}
+    return tuple(
+        path for path in after.touched_paths if path.as_posix() not in before_paths
+    )
+
+
+def _display_vault_path(vault_path: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(vault_path.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _validate_source_artifacts(
