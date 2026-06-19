@@ -30,8 +30,8 @@ Obsidian vault repo:
 Current working state:
 
 - local ingest supports `SYNTHESIZE=1 CONNECT=1`;
-- Slack ingest can create the connector when
-  `SLACK_VAULT_SLACK_INGEST_CONNECT=true`;
+- Slack ingest creates the connector by default and can bypass it when
+  `SLACK_VAULT_SLACK_INGEST_CONNECT=false`;
 - existing notes can be connected with `slack-vault connect-note` or
   `make connect-note`;
 - connection diffs are inspected and validated before Git commit;
@@ -542,7 +542,7 @@ Environment settings:
 
 ```text
 SLACK_VAULT_CONNECT_IMPORTED_DOCUMENTS=false
-SLACK_VAULT_SLACK_INGEST_CONNECT=false
+SLACK_VAULT_SLACK_INGEST_CONNECT=true
 SLACK_VAULT_CONNECTION_MAX_TURNS=20
 SLACK_VAULT_CONNECTION_MAX_TOUCHED_PATHS=12
 SLACK_VAULT_CONNECTION_MAX_CHANGED_LINES=400
@@ -793,8 +793,8 @@ Remaining questions:
 1. What exact raw agent-message artifact format should we store outside Git?
 2. Should batch backfill be a simple `connect-existing --all`, or should it
    require explicit note lists and max-count limits from the start?
-3. After live smoke testing, should Slack connection be enabled by default or
-   remain explicitly opt-in?
+3. Should raw agent-message artifacts be attached to Slack operator replies when
+   connection fails?
 
 ## 12. References
 

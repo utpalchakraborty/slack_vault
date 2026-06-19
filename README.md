@@ -221,9 +221,9 @@ the configured upstream by default so other Obsidian vault clones can pull the
 new notes. Set `SLACK_VAULT_SLACK_INGEST_GIT_PUSH=false` to keep Slack-ingested
 vault commits local during development.
 
-Slack connection is disabled by default while the agent flow is being hardened.
-Enable it with `SLACK_VAULT_SLACK_INGEST_CONNECT=true` after synthesis is also
-enabled. Connection limits are controlled by
+Slack connection is enabled by default for synthesized Slack imports. Set
+`SLACK_VAULT_SLACK_INGEST_CONNECT=false` only when you need to temporarily bypass
+the connection agent. Connection limits are controlled by
 `SLACK_VAULT_CONNECTION_MAX_TURNS`,
 `SLACK_VAULT_CONNECTION_MAX_TOUCHED_PATHS`, and
 `SLACK_VAULT_CONNECTION_MAX_CHANGED_LINES`.

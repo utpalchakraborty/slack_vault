@@ -343,7 +343,7 @@ def test_settings_json_redacts_secrets() -> None:
     assert payload["ingestion"]["slack_ingest_git_commit"] is True
     assert payload["ingestion"]["slack_ingest_git_push"] is True
     assert payload["connection"]["connect_imported_documents"] is False
-    assert payload["connection"]["slack_ingest_connect"] is False
+    assert payload["connection"]["slack_ingest_connect"] is True
     assert payload["connection"]["max_turns"] == 20
     assert payload["connection"]["max_touched_paths"] == 12
     assert payload["connection"]["max_changed_lines"] == 400

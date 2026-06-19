@@ -143,6 +143,7 @@ def test_default_slack_ingest_dependencies_respect_runtime_flags(
             "SLACK_VAULT_OBSIDIAN_PATH": str(tmp_path / "disabled-vault"),
             "SLACK_VAULT_SLACK_INGEST_ENHANCE": "false",
             "SLACK_VAULT_SLACK_INGEST_SYNTHESIZE": "false",
+            "SLACK_VAULT_SLACK_INGEST_CONNECT": "false",
             "SLACK_VAULT_SLACK_INGEST_GIT_COMMIT": "false",
         }
     )
