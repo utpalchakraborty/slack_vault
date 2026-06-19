@@ -38,15 +38,30 @@ Current working state:
 - normal agent runs are blocked from touching `.obsidian/`, `.git/`, skill
   files, non-Markdown files, unsafe paths, deletes, renames, and overly large
   diffs;
-- `make check` passed with 207 tests, 2 skipped, and 90.15 percent coverage.
+- existing-note live smoke passed on
+  `10 Knowledge/new-jersey-company-filings-status-garden-state-meridian-services-llc.md`;
+- `make check` passed with 208 tests, 2 skipped, and 90.11 percent coverage.
 
 Not done yet:
 
-- live Claude Agent smoke test against a disposable or approved vault note;
+- full new-document local ingest smoke with `SYNTHESIZE=1 CONNECT=1`;
 - Slack live smoke test with connection enabled;
 - full raw agent-message artifact logging outside Git;
 - batch backfill command for many existing notes;
 - prompt/skill tuning based on real vault diffs.
+
+Latest smoke result:
+
+- command:
+  `make connect-note NOTE="10 Knowledge/new-jersey-company-filings-status-garden-state-meridian-services-llc.md" NO_GIT_COMMIT=1`;
+- result: completed;
+- vault diff: 2 Markdown files, 8 inserted lines;
+- validation: `make validate-vault-diff` returned OK;
+- behavior: added reciprocal links between the New Jersey entity filing note and
+  the broader company filings status note;
+- follow-up code fix: `5184896` isolated Claude Agent SDK runs from unrelated
+  user Claude Code settings, streamed prompts for permission callbacks, passed
+  `ANTHROPIC_API_KEY` into the SDK subprocess, and preserved useful API errors.
 
 ## 1. Goal
 
@@ -681,11 +696,12 @@ Acceptance criteria:
 
 ### Step H: Rollout And Tuning
 
-Status: pending.
+Status: partially complete.
 
 Deliverables:
 
-- local smoke test on the current small vault;
+- local existing-note smoke test on the current small vault;
+- full local new-document smoke test;
 - Slack smoke test with one approved document;
 - prompt/skill iteration based on actual diffs;
 - docs update in `README.md` and `docs/implementation-plan.md`.
