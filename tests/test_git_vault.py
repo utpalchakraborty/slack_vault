@@ -8,6 +8,7 @@ import pytest
 from slack_vault.git_vault import (
     GitVaultCommitter,
     VaultGitError,
+    build_connection_commit_message,
     build_ingest_commit_message,
 )
 
@@ -27,6 +28,23 @@ def test_build_ingest_commit_message_includes_source_and_notes() -> None:
     assert "Source record: 20 Sources/sources/source.md" in body
     assert "- 10 Knowledge/example.md" in body
     assert "Connected vault paths:" in body
+    assert "- 30 Maps/topic-index.md" in body
+
+
+def test_build_connection_commit_message_includes_source_and_note() -> None:
+    subject, body = build_connection_commit_message(
+        source_id="source-2026-06-13-abcdef123456",
+        source_filename="Example.docx",
+        source_record_path=Path("20 Sources/sources/source.md"),
+        primary_note_path=Path("10 Knowledge/example.md"),
+        connection_note_paths=(Path("30 Maps/topic-index.md"),),
+    )
+
+    assert subject == "Connect source-2026-06-13-abcdef123456"
+    assert "Source ID: source-2026-06-13-abcdef123456" in body
+    assert "Source filename: Example.docx" in body
+    assert "Source record: 20 Sources/sources/source.md" in body
+    assert "Primary knowledge note: 10 Knowledge/example.md" in body
     assert "- 30 Maps/topic-index.md" in body
 
 
@@ -75,6 +93,46 @@ def test_git_vault_committer_creates_commit_for_generated_paths(
         "20 Sources/sources/source-test.md",
         "30 Maps/topic-index.md",
     ]
+
+
+def test_git_vault_committer_creates_connection_commit(
+    tmp_path: Path,
+) -> None:
+    vault_path = tmp_path / "vault"
+    _init_git_repo(vault_path)
+    source_record = vault_path / "20 Sources/sources/source-test.md"
+    knowledge_note = vault_path / "10 Knowledge/example.md"
+    connection_note = vault_path / "30 Maps/topic-index.md"
+    source_record.parent.mkdir(parents=True)
+    knowledge_note.parent.mkdir(parents=True)
+    connection_note.parent.mkdir(parents=True)
+    source_record.write_text("# Source\n", encoding="utf-8")
+    knowledge_note.write_text("# Knowledge\n", encoding="utf-8")
+    _run_git(vault_path, "add", ".")
+    _run_git(vault_path, "commit", "-m", "Initialize vault")
+    connection_note.write_text("# Topic Index\n", encoding="utf-8")
+
+    result = GitVaultCommitter().commit_connection(
+        vault_path,
+        source_id="source-test",
+        source_filename="Example.docx",
+        source_record_path=source_record,
+        primary_note_path=knowledge_note,
+        connection_note_paths=(connection_note,),
+    )
+
+    assert result.committed is True
+    assert result.commit_hash is not None
+    assert result.paths == (
+        Path("20 Sources/sources/source-test.md"),
+        Path("10 Knowledge/example.md"),
+        Path("30 Maps/topic-index.md"),
+    )
+    assert _git(vault_path, "status", "--short") == ""
+    assert _git(vault_path, "log", "-1", "--pretty=%s") == "Connect source-test"
+    commit_body = _git(vault_path, "log", "-1", "--pretty=%b")
+    assert "Primary knowledge note: 10 Knowledge/example.md" in commit_body
+    assert "- 30 Maps/topic-index.md" in commit_body
 
 
 def test_git_vault_committer_pushes_when_requested(tmp_path: Path) -> None:

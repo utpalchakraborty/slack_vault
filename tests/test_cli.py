@@ -331,6 +331,95 @@ def test_validate_vault_diff_reports_safe_markdown_changes(
     assert "- 10 Knowledge/imported-note.md" in captured.out
 
 
+def test_connect_note_commits_existing_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault_path = tmp_path / "vault"
+    _init_git_repo(vault_path)
+    note_path = vault_path / "10 Knowledge/fake.md"
+    source_record = vault_path / "20 Sources/sources/source-test.md"
+    note_path.parent.mkdir(parents=True)
+    source_record.parent.mkdir(parents=True)
+    note_path.write_text(
+        "\n".join(
+            [
+                "---",
+                'title: "Fake"',
+                'source_ids: ["source-test"]',
+                "---",
+                "",
+                "# Fake",
+                "",
+                "## Sources",
+                "",
+                "- source-test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source_record.write_text(
+        "\n".join(
+            [
+                "---",
+                'source_id: "source-test"',
+                'original_filename: "Example.md"',
+                "---",
+                "",
+                "# Example",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _run_git(vault_path, "add", ".")
+    _run_git(vault_path, "commit", "-m", "Initialize vault")
+    monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(vault_path))
+    monkeypatch.setattr(
+        "slack_vault.cli.ClaudeAgentVaultConnector.from_settings",
+        lambda settings: _FakeCliConnector(vault_path),
+    )
+
+    exit_code = main(["connect-note", "10 Knowledge/fake.md"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Source: source-test" in captured.out
+    assert "Connection status: completed" in captured.out
+    assert "Connected vault paths:" in captured.out
+    assert "Vault Git commit: " in captured.out
+    assert _git(vault_path, "status", "--short") == ""
+    assert _git(vault_path, "log", "-1", "--pretty=%s") == "Connect source-test"
+    tracked_files = _git(vault_path, "ls-files").splitlines()
+    assert "30 Maps/topic-index.md" in tracked_files
+
+
+def test_connect_note_requires_source_id_for_ambiguous_notes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault_path = tmp_path / "vault"
+    _init_git_repo(vault_path)
+    note_path = vault_path / "10 Knowledge/fake.md"
+    source_record = vault_path / "20 Sources/sources/source-a.md"
+    note_path.parent.mkdir(parents=True)
+    source_record.parent.mkdir(parents=True)
+    note_path.write_text(
+        '---\nsource_ids: ["source-a", "source-b"]\n---\n# Fake\n',
+        encoding="utf-8",
+    )
+    source_record.write_text(
+        '---\nsource_id: "source-a"\n---\n# Source\n',
+        encoding="utf-8",
+    )
+    _run_git(vault_path, "add", ".")
+    _run_git(vault_path, "commit", "-m", "Initialize vault")
+    monkeypatch.setenv("SLACK_VAULT_OBSIDIAN_PATH", str(vault_path))
+
+    with pytest.raises(ValueError, match="multiple source_ids"):
+        main(["connect-note", "10 Knowledge/fake.md", "--no-git-commit"])
+
+
 def test_ask_requires_ai_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -730,6 +819,8 @@ class _FakeCliConnector:
     ) -> VaultConnectionResult:
         del vault_path, source_record_path
         touched_path = self.vault_path / "30 Maps/topic-index.md"
+        touched_path.parent.mkdir(parents=True, exist_ok=True)
+        touched_path.write_text("# Topic Index\n\n- [[fake|Fake]]\n", encoding="utf-8")
         return VaultConnectionResult(
             status=ConnectionStatus.COMPLETED,
             source_id=source_id,

@@ -1,4 +1,4 @@
-.PHONY: ask check-slack-setup ingest-file init-vault init-vault-overwrite run run-slack show-config slack-qa-worker slack-worker validate-vault-diff
+.PHONY: ask check-slack-setup connect-note ingest-file init-vault init-vault-overwrite run run-slack show-config slack-qa-worker slack-worker validate-vault-diff
 
 run: show-config
 
@@ -22,6 +22,12 @@ ifndef QUESTION
 	$(error QUESTION is required. Usage: make ask QUESTION="question")
 endif
 	$(UV_RUN) slack-vault ask "$(QUESTION)" $(if $(LIMIT),--limit "$(LIMIT)")
+
+connect-note:
+ifndef NOTE
+	$(error NOTE is required. Usage: make connect-note NOTE="10 Knowledge/example.md")
+endif
+	$(UV_RUN) slack-vault connect-note "$(NOTE)" $(if $(SOURCE_ID),--source-id "$(SOURCE_ID)") $(if $(NO_GIT_COMMIT),--no-git-commit)
 
 validate-vault-diff:
 ifndef SOURCE_ID

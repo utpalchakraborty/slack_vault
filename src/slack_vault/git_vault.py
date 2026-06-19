@@ -155,6 +155,93 @@ class GitVaultCommitter:
             push_skipped_reason=push_skipped_reason,
         )
 
+    def commit_connection(
+        self,
+        vault_path: Path,
+        *,
+        source_id: str,
+        source_filename: str,
+        source_record_path: Path,
+        primary_note_path: Path,
+        connection_note_paths: tuple[Path, ...] = (),
+    ) -> VaultGitCommitResult:
+        """Stage and commit one existing note's connection changes."""
+
+        worktree = _ensure_git_repository(vault_path)
+        source_record = _relative_to_worktree(source_record_path, worktree)
+        primary_note = _relative_to_worktree(primary_note_path, worktree)
+        connection_notes = tuple(
+            _relative_to_worktree(path, worktree) for path in connection_note_paths
+        )
+        relative_paths = tuple(
+            _dedupe_paths([source_record, primary_note, *connection_notes])
+        )
+        subject, body = build_connection_commit_message(
+            source_id=source_id,
+            source_filename=source_filename,
+            source_record_path=source_record,
+            primary_note_path=primary_note,
+            connection_note_paths=connection_notes,
+        )
+        logger.info(
+            "Committing vault connection source_id=%s paths=%s",
+            source_id,
+            tuple(path.as_posix() for path in relative_paths),
+        )
+        _git(worktree, "add", "--", *(path.as_posix() for path in relative_paths))
+        diff = _git(
+            worktree,
+            "diff",
+            "--cached",
+            "--quiet",
+            "--",
+            *(path.as_posix() for path in relative_paths),
+            check=False,
+        )
+        if diff.returncode == 0:
+            logger.info("No vault connection changes to commit source_id=%s", source_id)
+            return VaultGitCommitResult(
+                committed=False,
+                commit_hash=None,
+                subject=subject,
+                body=body,
+                paths=relative_paths,
+                skipped_reason="No staged vault changes.",
+                push_skipped_reason="No commit to push.",
+            )
+        if diff.returncode != 1:
+            raise VaultGitError(diff.stderr.strip() or "Unable to inspect staged diff")
+
+        _git(worktree, "commit", "-m", subject, "-m", body)
+        commit_hash = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+        pushed = False
+        push_skipped_reason = None
+        if self.push_after_commit:
+            logger.info(
+                "Pushing vault connection source_id=%s commit_hash=%s",
+                source_id,
+                commit_hash,
+            )
+            _git(worktree, "push")
+            pushed = True
+        else:
+            push_skipped_reason = "Push not requested."
+        logger.info(
+            "Committed vault connection source_id=%s commit_hash=%s pushed=%s",
+            source_id,
+            commit_hash,
+            pushed,
+        )
+        return VaultGitCommitResult(
+            committed=True,
+            commit_hash=commit_hash,
+            subject=subject,
+            body=body,
+            paths=relative_paths,
+            pushed=pushed,
+            push_skipped_reason=push_skipped_reason,
+        )
+
 
 def build_ingest_commit_message(
     *,
@@ -193,6 +280,36 @@ def build_ingest_commit_message(
     return subject, body
 
 
+def build_connection_commit_message(
+    *,
+    source_id: str,
+    source_filename: str,
+    source_record_path: Path,
+    primary_note_path: Path,
+    connection_note_paths: tuple[Path, ...] = (),
+) -> tuple[str, str]:
+    """Build a structured vault connection commit message."""
+
+    subject = f"Connect {source_id}"
+    connection_lines = (
+        [f"- {path.as_posix()}" for path in connection_note_paths]
+        if connection_note_paths
+        else ["- None"]
+    )
+    body = "\n".join(
+        [
+            f"Source ID: {source_id}",
+            f"Source filename: {source_filename}",
+            f"Source record: {source_record_path.as_posix()}",
+            f"Primary knowledge note: {primary_note_path.as_posix()}",
+            "",
+            "Connected vault paths:",
+            *connection_lines,
+        ]
+    )
+    return subject, body
+
+
 def _ensure_git_repository(vault_path: Path) -> Path:
     result = _git(vault_path, "rev-parse", "--show-toplevel", check=False)
     if result.returncode != 0:
@@ -209,6 +326,18 @@ def _relative_to_worktree(path: Path, worktree: Path) -> Path:
         raise VaultGitError(
             f"Generated vault path is outside the Git worktree: {path}"
         ) from exc
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique_paths: list[Path] = []
+    for path in paths:
+        key = path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_paths.append(path)
+    return unique_paths
 
 
 def _git(

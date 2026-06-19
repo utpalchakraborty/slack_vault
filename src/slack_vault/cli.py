@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from slack_vault.ai import AITextProvider, AnthropicAIProvider, RetryingAITextProvider
 from slack_vault.config import Settings
 from slack_vault.connections import (
     ClaudeAgentVaultConnector,
+    ConnectionStatus,
     VaultConnector,
     VaultDiffValidationConfig,
     inspect_vault_diff,
@@ -23,6 +25,7 @@ from slack_vault.ingest import IngestProcessingError, ingest_local_file
 from slack_vault.log_setup import configure_logging
 from slack_vault.qa import render_answer_result
 from slack_vault.qa_service import answer_question_from_settings
+from slack_vault.retrieval import load_vault_index
 from slack_vault.slack_app import create_slack_web_client, run_socket_mode_app
 from slack_vault.slack_ingest import build_slack_ingestion_service
 from slack_vault.slack_qa import build_slack_qa_service
@@ -126,6 +129,24 @@ def build_parser() -> argparse.ArgumentParser:
     validate_diff_parser.add_argument(
         "--primary-note",
         help="Vault-relative path to the primary knowledge note.",
+    )
+
+    connect_note_parser = subparsers.add_parser(
+        "connect-note",
+        help="Run the vault connection agent for an existing knowledge note.",
+    )
+    connect_note_parser.add_argument(
+        "note",
+        help="Vault-relative or absolute path to an existing knowledge note.",
+    )
+    connect_note_parser.add_argument(
+        "--source-id",
+        help="Source ID to connect when the note has zero or multiple source IDs.",
+    )
+    connect_note_parser.add_argument(
+        "--no-git-commit",
+        action="store_true",
+        help="Run connection without committing accepted vault changes.",
     )
 
     subparsers.add_parser(
@@ -340,6 +361,64 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"- {error}")
         return 1
 
+    if args.command == "connect-note":
+        print(f"Log file: {log_path}")
+        vault_committer = None if args.no_git_commit else GitVaultCommitter()
+        if vault_committer is not None:
+            vault_committer.ensure_clean_worktree(settings.obsidian_vault_path)
+        target = _resolve_connect_note_target(
+            settings,
+            Path(args.note),
+            source_id=args.source_id,
+        )
+        connector = ClaudeAgentVaultConnector.from_settings(settings)
+        connection_result = connector.connect(
+            settings.obsidian_vault_path,
+            source_id=target.source_id,
+            source_record_path=target.source_record_path,
+            primary_note_path=target.primary_note_path,
+        )
+        print(f"Source: {target.source_id}")
+        print(f"Knowledge note: {target.primary_note_path}")
+        print(f"Connection status: {connection_result.status.value}")
+        if connection_result.touched_paths:
+            print("Connected vault paths:")
+            for path in connection_result.touched_paths:
+                print(f"- {path}")
+        if connection_result.agent_summary is not None:
+            print(f"Connection summary: {connection_result.agent_summary}")
+        if connection_result.validation_errors:
+            print("Connection errors:")
+            for error in connection_result.validation_errors:
+                print(f"- {error}")
+        if connection_result.status not in {
+            ConnectionStatus.COMPLETED,
+            ConnectionStatus.SKIPPED,
+            ConnectionStatus.COMMIT_SKIPPED,
+            ConnectionStatus.NOT_REQUESTED,
+        }:
+            print("Vault Git commit: not_created")
+            return 1
+        git_commit = (
+            None
+            if vault_committer is None
+            else vault_committer.commit_connection(
+                settings.obsidian_vault_path,
+                source_id=target.source_id,
+                source_filename=target.source_filename,
+                source_record_path=target.source_record_path,
+                primary_note_path=target.primary_note_path,
+                connection_note_paths=connection_result.touched_paths,
+            )
+        )
+        if git_commit is None:
+            print("Vault Git commit: not_requested")
+        elif git_commit.committed:
+            print(f"Vault Git commit: {git_commit.commit_hash}")
+        else:
+            print(f"Vault Git commit: skipped ({git_commit.skipped_reason})")
+        return 0
+
     if args.command == "run-slack":
         print(f"Log file: {log_path}")
         print("Starting Slack Vault Socket Mode listener")
@@ -406,3 +485,72 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     raise ValueError(f"Unsupported command: {args.command}")
+
+
+@dataclass(frozen=True)
+class _ConnectNoteTarget:
+    source_id: str
+    source_filename: str
+    source_record_path: Path
+    primary_note_path: Path
+
+
+def _resolve_connect_note_target(
+    settings: Settings,
+    note_path: Path,
+    *,
+    source_id: str | None,
+) -> _ConnectNoteTarget:
+    absolute_note_path, relative_note_path = _resolve_vault_path(
+        settings.obsidian_vault_path,
+        note_path,
+    )
+    index = load_vault_index(settings.obsidian_vault_path)
+    note = next(
+        (
+            candidate
+            for candidate in index.knowledge_notes
+            if candidate.relative_path == relative_note_path
+        ),
+        None,
+    )
+    if note is None:
+        raise ValueError(
+            "Knowledge note is not indexed under the configured vault: "
+            f"{relative_note_path.as_posix()}"
+        )
+
+    resolved_source_id = source_id
+    if resolved_source_id is None:
+        if len(note.source_ids) == 1:
+            resolved_source_id = note.source_ids[0]
+        elif not note.source_ids:
+            raise ValueError(
+                "Knowledge note has no source_ids frontmatter; pass --source-id."
+            )
+        else:
+            raise ValueError(
+                "Knowledge note has multiple source_ids; pass --source-id."
+            )
+
+    source_record = index.source_record_for(resolved_source_id)
+    if source_record is None:
+        raise ValueError(f"Source record not found for source ID: {resolved_source_id}")
+
+    return _ConnectNoteTarget(
+        source_id=resolved_source_id,
+        source_filename=source_record.original_filename or source_record.title,
+        source_record_path=source_record.path,
+        primary_note_path=absolute_note_path,
+    )
+
+
+def _resolve_vault_path(vault_path: Path, path: Path) -> tuple[Path, Path]:
+    absolute_path = path.expanduser() if path.is_absolute() else vault_path / path
+    try:
+        relative_path = absolute_path.resolve().relative_to(vault_path.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Path must be inside the configured vault: {path}") from exc
+    if not absolute_path.is_file():
+        raise ValueError(f"Vault path does not exist: {relative_path.as_posix()}")
+    return absolute_path, relative_path

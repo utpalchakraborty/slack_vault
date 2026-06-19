@@ -93,6 +93,15 @@ accepted connection paths in the same vault commit.
 make ingest-file FILE=path/to/source.md SYNTHESIZE=1 CONNECT=1
 ```
 
+To connect an already synthesized note, run the backfill command. If the note
+has exactly one `source_ids` entry in frontmatter, the source ID is inferred;
+otherwise pass `SOURCE_ID=...`.
+
+```sh
+make connect-note NOTE="10 Knowledge/example.md"
+make connect-note NOTE="10 Knowledge/example.md" SOURCE_ID=source-YYYY-MM-DD-abcdef123456
+```
+
 Enhancement and synthesis can be combined when useful:
 
 ```sh
